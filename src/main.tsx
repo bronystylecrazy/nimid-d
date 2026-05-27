@@ -3,6 +3,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import { HashRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import mqtt from 'mqtt';
 import * as THREE from 'three';
 import './tokens.css';
 
@@ -12,6 +13,22 @@ declare global {
 
 window.THREE = THREE;
 const ReactDOM = { createRoot, createPortal };
+function defaultMqttShakeUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/mqtt`;
+}
+const MQTT_SHAKE_URL = import.meta.env.VITE_MQTT_URL || defaultMqttShakeUrl();
+const MQTT_SHAKE_TOPIC = import.meta.env.VITE_MQTT_SHAKE_TOPIC || 'v1/shake';
+const MQTT_SHAKE_EVENT = 'nimidd:mqtt-shake';
+const MQTT_STATUS_EVENT = 'nimidd:mqtt-status';
+
+function publishMqttStatus(status) {
+  window.dispatchEvent(new CustomEvent(MQTT_STATUS_EVENT, { detail: status }));
+}
+
+function isShakeTopic(topic) {
+  return String(topic || '') === MQTT_SHAKE_TOPIC;
+}
 
 
 // DesignCanvas.tsx — Figma-ish design canvas wrapper
@@ -1614,7 +1631,7 @@ window.Icon = Icon;
 // ─────────────────────────────────────────────
 // Decorative doodles (organic blobs + sparkles)
 // ─────────────────────────────────────────────
-const Blob = ({ d, fill, style }) => (
+const BlobShape = ({ d, fill, style }) => (
   <svg viewBox="0 0 200 200" preserveAspectRatio="none"
     style={{ position: 'absolute', ...style }}>
     <path d={d} fill={fill}/>
@@ -1626,7 +1643,7 @@ const Blobs = {
   two:   'M30 110c-5-40 30-80 80-75 40 4 70 35 60 80-8 36-50 55-90 40-32-12-46-25-50-45z',
   three: 'M50 60c20-20 70-25 95 0 30 30 5 80-25 95-30 14-75 0-85-35-9-30 5-50 15-60z',
 };
-window.Blob = Blob; window.Blobs = Blobs;
+window.BlobShape = BlobShape; window.Blobs = Blobs;
 
 // Sparkle dots — for selected states / magical moments
 function Sparkles({ count = 8, color = '#E0B570', style }) {
@@ -1753,9 +1770,9 @@ function AppShell({ step, children, temple = 'thai', density = 'med' }) {
     <div className="proto" data-season="spring">
       <Sparkles count={density === 'high' ? 18 : density === 'med' ? 10 : 4}/>
       {/* soft background blobs for warmth */}
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.18)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.20)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.12)" style={{ width: 460, height: 460, top: '30%', left: '60%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.18)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.20)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.12)" style={{ width: 460, height: 460, top: '30%', left: '60%', filter: 'blur(30px)' }}/>
 
       <header style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5,
@@ -1929,9 +1946,9 @@ function RegisterForm({ onContinue, initial = {} }) {
   return (
     <div className="proto" style={{ overflow: 'auto' }}>
       <Sparkles count={14}/>
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.20)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.20)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
 
       {/* Header */}
       <header style={{
@@ -2305,9 +2322,9 @@ function WelcomeBack({ user, onContinue, onForget }) {
   return (
     <div className="proto" style={{ overflow: 'auto' }}>
       <Sparkles count={16}/>
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.22)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.22)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
 
       {/* Header */}
       <header style={{
@@ -3150,6 +3167,7 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
   const onShakeRef = React.useRef(null);
   const [shakes, setShakes] = React.useState(0);
   const [phase, setPhase] = React.useState('ready'); // ready | shaking | revealed
+  const [mqttStatus, setMqttStatus] = React.useState(window.__mqttStatus || 'connecting');
   const targetShakes = 14;
 
   // Audio synth — single soft bell on completion. Built lazily on user
@@ -3211,6 +3229,20 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
   }, [playBell]);
   onShakeRef.current = onShake;
 
+  React.useEffect(() => {
+    const handleShake = () => {
+      if (!sceneApiRef.current) return;
+      onShakeRef.current?.();
+    };
+    const handleStatus = (event) => setMqttStatus(event.detail);
+    window.addEventListener(MQTT_SHAKE_EVENT, handleShake);
+    window.addEventListener(MQTT_STATUS_EVENT, handleStatus);
+    return () => {
+      window.removeEventListener(MQTT_SHAKE_EVENT, handleShake);
+      window.removeEventListener(MQTT_STATUS_EVENT, handleStatus);
+    };
+  }, []);
+
   // Auto-advance to the result screen ~2.4s after the stick reveals
   React.useEffect(() => {
     if (phase !== 'revealed') return;
@@ -3269,6 +3301,27 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span className="eyebrow">หมวด</span>
               <span style={{ fontSize: 13, fontWeight: 500 }}>{CATEGORIES.find(c => c.id === state.category)?.name}</span>
+            </div>
+            <div style={{ height: 1, background: 'var(--border-soft)', margin: '14px -22px' }}/>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <span className="eyebrow">MQTT</span>
+              <span title={`${MQTT_SHAKE_URL} · ${MQTT_SHAKE_TOPIC}`} style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                minWidth: 0,
+                fontSize: 12,
+                color: mqttStatus === 'connected' ? 'var(--c-mint-deep)' : 'var(--text-muted)',
+              }}>
+                <span style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: mqttStatus === 'connected' ? 'var(--c-mint-deep)' : 'var(--c-coral)',
+                  flexShrink: 0,
+                }}/>
+                {mqttStatus}
+              </span>
             </div>
           </div>
         </div>
@@ -6213,6 +6266,76 @@ function navLinkStyle(active) {
 }
 
 function RoutedApp() {
+  React.useEffect(() => {
+    const client = mqtt.connect(MQTT_SHAKE_URL, {
+      clean: true,
+      clientId: `nimidd_frontend_${Math.random().toString(16).slice(2)}`,
+      connectTimeout: 5000,
+      keepalive: 15,
+      reconnectPeriod: 1000,
+      resubscribe: true,
+    });
+    let reconnectTimer = null;
+
+    const scheduleReconnect = () => {
+      if (reconnectTimer || client.connected || client.reconnecting) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (!client.connected) client.reconnect();
+      }, 1000);
+    };
+
+    window.__mqttStatus = 'connecting';
+    publishMqttStatus('connecting');
+
+    client.on('connect', () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      window.__mqttStatus = 'connected';
+      publishMqttStatus('connected');
+      client.subscribe(MQTT_SHAKE_TOPIC, (err) => {
+        if (!err) return;
+        window.__mqttStatus = 'subscribe-error';
+        publishMqttStatus('subscribe-error');
+      });
+    });
+
+    client.on('reconnect', () => {
+      window.__mqttStatus = 'reconnecting';
+      publishMqttStatus('reconnecting');
+    });
+    client.on('offline', () => {
+      window.__mqttStatus = 'offline';
+      publishMqttStatus('offline');
+      scheduleReconnect();
+    });
+    client.on('close', () => {
+      window.__mqttStatus = 'closed';
+      publishMqttStatus('closed');
+      scheduleReconnect();
+    });
+    client.on('error', () => {
+      window.__mqttStatus = 'error';
+      publishMqttStatus('error');
+      scheduleReconnect();
+    });
+    client.on('message', (topic, payload) => {
+      window.__lastMqttMessage = {
+        topic: String(topic),
+        payload: payload?.toString?.() || '',
+        at: new Date().toISOString(),
+      };
+      if (isShakeTopic(topic)) window.dispatchEvent(new CustomEvent(MQTT_SHAKE_EVENT));
+    });
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      client.end(true);
+    };
+  }, []);
+
   return (
     <HashRouter>
       <AppNav/>

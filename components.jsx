@@ -103,7 +103,7 @@ window.Icon = Icon;
 // ─────────────────────────────────────────────
 // Decorative doodles (organic blobs + sparkles)
 // ─────────────────────────────────────────────
-const Blob = ({ d, fill, style }) => (
+const BlobShape = ({ d, fill, style }) => (
   <svg viewBox="0 0 200 200" preserveAspectRatio="none"
     style={{ position: 'absolute', ...style }}>
     <path d={d} fill={fill}/>
@@ -115,7 +115,7 @@ const Blobs = {
   two:   'M30 110c-5-40 30-80 80-75 40 4 70 35 60 80-8 36-50 55-90 40-32-12-46-25-50-45z',
   three: 'M50 60c20-20 70-25 95 0 30 30 5 80-25 95-30 14-75 0-85-35-9-30 5-50 15-60z',
 };
-window.Blob = Blob; window.Blobs = Blobs;
+window.BlobShape = BlobShape; window.Blobs = Blobs;
 
 // Sparkle dots — for selected states / magical moments
 function Sparkles({ count = 8, color = '#E0B570', style }) {
@@ -242,9 +242,9 @@ function AppShell({ step, children, temple = 'thai', density = 'med' }) {
     <div className="proto" data-season="spring">
       <Sparkles count={density === 'high' ? 18 : density === 'med' ? 10 : 4}/>
       {/* soft background blobs for warmth */}
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.18)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.20)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.12)" style={{ width: 460, height: 460, top: '30%', left: '60%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.18)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.20)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.12)" style={{ width: 460, height: 460, top: '30%', left: '60%', filter: 'blur(30px)' }}/>
 
       <header style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5,

@@ -101,9 +101,9 @@ function RegisterForm({ onContinue, initial = {} }) {
   return (
     <div className="proto" style={{ overflow: 'auto' }}>
       <Sparkles count={14}/>
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.20)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.20)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
 
       {/* Header */}
       <header style={{
@@ -477,9 +477,9 @@ function WelcomeBack({ user, onContinue, onForget }) {
   return (
     <div className="proto" style={{ overflow: 'auto' }}>
       <Sparkles count={16}/>
-      <Blob d={Blobs.one}  fill="rgba(242,181,160,.22)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
-      <Blob d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
-      <Blob d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
+      <BlobShape d={Blobs.one}  fill="rgba(242,181,160,.22)" style={{ width: 520, height: 520, top: -160, left: -160, filter: 'blur(20px)' }}/>
+      <BlobShape d={Blobs.two}  fill="rgba(232,200,224,.22)" style={{ width: 600, height: 600, bottom: -220, right: -180, filter: 'blur(24px)' }}/>
+      <BlobShape d={Blobs.three} fill="rgba(184,216,200,.16)" style={{ width: 460, height: 460, top: '20%', left: '55%', filter: 'blur(30px)' }}/>
 
       {/* Header */}
       <header style={{

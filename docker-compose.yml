@@ -1,0 +1,35 @@
+services:
+  nimidd:
+    image: oci.devsirawit.com/nimidd:latest
+    platform: linux/arm64
+    container_name: nimidd
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    ports:
+      - "80:80"
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    platform: linux/arm64
+    container_name: nimidd-mqtt
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+      - "18883:9001"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: nimidd-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --label-enable
+      - --cleanup
+      - --interval
+      - "5"
