@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { Database } from 'bun:sqlite';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, normalize, relative } from 'node:path';
 
 const SESSION_TTL_DAYS = 90;
@@ -133,6 +133,57 @@ function readingFromRow(row) {
   };
 }
 
+function parseMigrationFilename(filename) {
+  const match = /^(\d+)_(.+)\.sql$/.exec(filename);
+  if (!match) return null;
+  return {
+    version: match[1],
+    name: match[2].replace(/_/g, ' '),
+    filename,
+  };
+}
+
+function runMigrations(db, migrationsDir = join(import.meta.dir, 'migrations')) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  const migrations = readdirSync(migrationsDir)
+    .map(parseMigrationFilename)
+    .filter(Boolean)
+    .sort((a, b) => a.version.localeCompare(b.version));
+
+  const applied = new Set(
+    db.query('SELECT version FROM schema_migrations').all().map((row) => row.version),
+  );
+  const insertMigration = db.query(`
+    INSERT INTO schema_migrations (version, name, applied_at)
+    VALUES (?, ?, ?)
+  `);
+
+  for (const migration of migrations) {
+    if (applied.has(migration.version)) continue;
+
+    const sql = readFileSync(join(migrationsDir, migration.filename), 'utf8').trim();
+    if (!sql) continue;
+
+    try {
+      db.exec('BEGIN');
+      db.exec(sql);
+      insertMigration.run(migration.version, migration.name, nowIso());
+      db.exec('COMMIT');
+      console.log(`[db] applied migration ${migration.filename}`);
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+}
+
 export function openAppDb(options = {}) {
   const dbPath = options.dbPath || process.env.DB_PATH || join(process.cwd(), 'data', 'nimidd.sqlite');
   const dataDir = dirname(dbPath);
@@ -142,90 +193,7 @@ export function openAppDb(options = {}) {
 
   const db = new Database(dbPath);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      display_name TEXT NOT NULL,
-      palm_image_path TEXT,
-      palm_image_mime TEXT,
-      palm_reading_status TEXT NOT NULL DEFAULT 'pending',
-      palm_reading_json TEXT,
-      palm_reading_manifest_json TEXT,
-      palm_reading_panel_path TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      last_seen_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS user_sessions (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash TEXT NOT NULL UNIQUE,
-      user_agent TEXT,
-      ip_address TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      expires_at TEXT NOT NULL,
-      revoked_at TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash);
-    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
-
-    CREATE TABLE IF NOT EXISTS ritual_states (
-      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      activity TEXT NOT NULL DEFAULT 'meditate',
-      feeling TEXT NOT NULL DEFAULT '',
-      moods_json TEXT NOT NULL DEFAULT '[]',
-      temple TEXT NOT NULL DEFAULT 'thai',
-      box TEXT NOT NULL DEFAULT 'gold',
-      category TEXT NOT NULL DEFAULT 'work',
-      music TEXT NOT NULL DEFAULT 'bell',
-      current_step TEXT NOT NULL DEFAULT 'login',
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS fortune_readings (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      user_snapshot_json TEXT,
-      activity TEXT,
-      feeling TEXT NOT NULL DEFAULT '',
-      moods_json TEXT NOT NULL DEFAULT '[]',
-      temple TEXT NOT NULL DEFAULT 'thai',
-      box TEXT NOT NULL DEFAULT 'gold',
-      category TEXT NOT NULL DEFAULT 'work',
-      music TEXT NOT NULL DEFAULT 'bell',
-      fortune_num TEXT NOT NULL,
-      fortune_title TEXT NOT NULL,
-      fortune_text TEXT NOT NULL,
-      fortune_advice TEXT,
-      fortune_question TEXT,
-      fortune_luck TEXT,
-      pre_score INTEGER,
-      post_score INTEGER,
-      post_moods_json TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_fortune_readings_user_id_created_at
-      ON fortune_readings(user_id, created_at DESC);
-
-    CREATE TABLE IF NOT EXISTS palm_reading_requests (
-      id TEXT PRIMARY KEY,
-      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-      status TEXT NOT NULL DEFAULT 'queued',
-      image_path TEXT,
-      response_json TEXT,
-      error_message TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      completed_at TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_palm_reading_requests_user_id
-      ON palm_reading_requests(user_id, created_at DESC);
-  `);
+  runMigrations(db, options.migrationsDir);
 
   const statements = {
     userById: db.query('SELECT * FROM users WHERE id = ?'),
@@ -310,7 +278,7 @@ export function openAppDb(options = {}) {
     const row = statements.sessionByHash.get(tokenHash, nowIso());
     if (!row) return null;
     const now = nowIso();
-    statements.touchSession.run(now, daysFromNow(SESSION_TTL_DAYS), row.id);
+    statements.touchSession.run(now, daysFromNow(SESSION_TTL_DAYS), row.session_id);
     statements.touchUser.run(now, now, row.user_id);
     return {
       id: row.session_id,
