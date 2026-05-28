@@ -1968,11 +1968,16 @@ function SummaryPanel({ state, onContinue, onReset }) {
 // meditation.tsx — Phase 2: 1-minute mindful activity
 // Either breathing animation (meditate) or walking path (walk).
 
+const BREATH_MIN_SCALE = 0.55;
+const BREATH_MAX_SCALE = 0.86;
+const easeBreath = (value) => 0.5 - Math.cos(Math.PI * Math.max(0, Math.min(1, value))) * 0.5;
+
 function MeditationScreen({ state, onContinue, onBack }) {
   const total = 60;
   const [t, setT] = React.useState(0);
   const [running, setRunning] = React.useState(true);
   const ref = React.useRef(0);
+  const autoContinueRef = React.useRef(false);
 
   React.useEffect(() => {
     let raf;
@@ -1994,13 +1999,56 @@ function MeditationScreen({ state, onContinue, onBack }) {
   const done = t >= total;
   const isMeditate = state.activity === 'meditate';
 
-  // breath cycle: 4s in, 4s hold, 4s out, 4s hold
+  React.useEffect(() => {
+    if (!done || autoContinueRef.current) return;
+    autoContinueRef.current = true;
+    setRunning(false);
+    onContinue?.();
+  }, [done, onContinue]);
+
+  // breath cycle: 4s in, 4s hold, 4s out, 4s rest
   const breathPhase = (() => {
     const cycle = t % 16;
-    if (cycle < 4)  return { label: 'หายใจเข้า',  scale: 0.55 + (cycle / 4) * 0.45, opacity: 0.95 };
-    if (cycle < 8)  return { label: 'กลั้นไว้',   scale: 1.0,  opacity: 1 };
-    if (cycle < 12) return { label: 'หายใจออก',  scale: 1.0 - ((cycle - 8) / 4) * 0.45, opacity: 0.75 };
-    return            { label: 'พักหายใจ',   scale: 0.55, opacity: 0.6 };
+    if (cycle < 4) {
+      const progress = easeBreath(cycle / 4);
+      return {
+        key: 'inhale',
+        label: 'หายใจเข้า',
+        scale: BREATH_MIN_SCALE + (BREATH_MAX_SCALE - BREATH_MIN_SCALE) * progress,
+        opacity: 0.68 + progress * 0.27,
+        haloOpacity: 0.18 + progress * 0.22,
+        centerOpacity: 0.78 + progress * 0.18,
+      };
+    }
+    if (cycle < 8) {
+      return {
+        key: 'hold',
+        label: 'กลั้นไว้',
+        scale: BREATH_MAX_SCALE,
+        opacity: 0.95,
+        haloOpacity: 0.4,
+        centerOpacity: 0.96,
+      };
+    }
+    if (cycle < 12) {
+      const progress = easeBreath((cycle - 8) / 4);
+      return {
+        key: 'exhale',
+        label: 'หายใจออก',
+        scale: BREATH_MAX_SCALE - (BREATH_MAX_SCALE - BREATH_MIN_SCALE) * progress,
+        opacity: 0.95 - progress * 0.25,
+        haloOpacity: 0.36 - progress * 0.18,
+        centerOpacity: 0.94 - progress * 0.2,
+      };
+    }
+    return {
+      key: 'rest',
+      label: 'พักหายใจ',
+      scale: BREATH_MIN_SCALE,
+      opacity: 0.32,
+      haloOpacity: 0.08,
+      centerOpacity: 0.58,
+    };
   })();
 
   return (
@@ -2101,14 +2149,17 @@ window.MeditationScreen = MeditationScreen;
 
 // ─────────────────────────────────────────────
 function BreathingVisual({ phase }) {
+  const restTransition = phase.key === 'rest' ? 'opacity .45s ease' : 'opacity .18s linear';
   return (
     <div style={{ position: 'relative', width: 460, height: 460 }}>
       {/* outermost halo */}
       <div style={{
         position: 'absolute', inset: 0, borderRadius: '50%',
         background: 'radial-gradient(circle, rgba(242,181,160,.25), transparent 70%)',
+        opacity: phase.haloOpacity,
         transform: `scale(${0.9 + phase.scale * 0.2})`,
-        transition: 'transform 1s ease-in-out',
+        transition: restTransition,
+        willChange: 'transform, opacity',
       }}/>
       {/* breathing ring stack */}
       {[1, 0.85, 0.7, 0.55, 0.4].map((s, i) => (
@@ -2118,7 +2169,8 @@ function BreathingVisual({ phase }) {
           border: `${i === 0 ? 2 : 1.2}px solid var(--c-peach-deep)`,
           opacity: phase.opacity * (0.9 - i * 0.15),
           transform: `scale(${phase.scale * s})`,
-          transition: 'transform 1.2s cubic-bezier(.4,0,.4,1), opacity .8s ease-in-out',
+          transition: restTransition,
+          willChange: 'transform, opacity',
         }}/>
       ))}
       {/* lotus center */}
@@ -2128,8 +2180,10 @@ function BreathingVisual({ phase }) {
         borderRadius: '50%',
         background: 'radial-gradient(circle, var(--c-peach), var(--c-lavender))',
         boxShadow: '0 0 60px rgba(242,181,160,.5)',
+        opacity: phase.centerOpacity,
         transform: `scale(${0.85 + phase.scale * 0.15})`,
-        transition: 'transform 1.2s ease-in-out',
+        transition: restTransition,
+        willChange: 'transform, opacity',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         <Icon.lotus size={64} color="#FBF2EA" sw={1.4}/>
@@ -2269,6 +2323,9 @@ function EnergyGraphBackground({ samples, active, color = 'var(--c-gold)' }) {
 // Stylized low-poly temple diorama. Click box to shake; meter fills; one
 // stick rises out. Plays a soft bell tone on completion.
 
+const SHAKE_REVEAL_POPUP_DELAY_MS = 2100;
+const SHAKE_RESULT_AUTO_ADVANCE_MS = 3000;
+
 function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol = 0.5 }) {
   const mountRef = React.useRef(null);
   const sceneApiRef = React.useRef(null);
@@ -2280,6 +2337,7 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
   const [intentEnergy, setIntentEnergy] = React.useState(0);
   const [energyGraph, setEnergyGraph] = React.useState([]);
   const [phase, setPhase] = React.useState('ready'); // ready | shaking | revealed
+  const [revealedStickNumber, setRevealedStickNumber] = React.useState(null);
   const [mqttStatus, setMqttStatus] = React.useState(window.__mqttStatus || 'connecting');
   const targetEnergy = 100;
 
@@ -2356,6 +2414,7 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
     const completedAt = new Date().toISOString();
     const siamseeStick = randomSiamseeStick();
     const luckyNumber = randomLuckyNumberForStick(siamseeStick?.stick_number, state.luckyNumber || state.shakeSession?.luckyNumber);
+    setRevealedStickNumber(siamseeStick?.stick_number || null);
     const shakeSession = {
       status: 'complete',
       startedAt: recorder.startedAt || completedAt,
@@ -2403,7 +2462,7 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
           finishShakeSession();
           sceneApiRef.current?.revealStick?.();
           playBell();
-          setTimeout(() => setPhase('revealed'), 1200);
+          setTimeout(() => setPhase('revealed'), SHAKE_REVEAL_POPUP_DELAY_MS);
         }
         return nextEnergy;
       });
@@ -2435,15 +2494,16 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
     return () => clearInterval(id);
   }, [phase]);
 
-  // Auto-advance to the result screen ~2.4s after the stick reveals
+  // Auto-advance to the result screen after the auspicious number popup.
   React.useEffect(() => {
     if (phase !== 'revealed') return;
-    const id = setTimeout(() => { onContinue && onContinue(); }, 2400);
+    const id = setTimeout(() => { onContinue && onContinue(); }, SHAKE_RESULT_AUTO_ADVANCE_MS);
     return () => clearTimeout(id);
   }, [phase, onContinue]);
 
   const pct = Math.min(1, intentEnergy / targetEnergy);
   const t = TEMPLES.find(x => x.id === state.temple);
+  const displayStickNumber = revealedStickNumber || state.siamseeStick?.stick_number || state.shakeSession?.stickNumber || '—';
 
   return (
     <AppShell step={2}>
@@ -2458,6 +2518,58 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
           <EnergyGraphBackground samples={energyGraph} active={phase === 'shaking' || phase === 'revealed'} color={t.accent}/>
           <div ref={mountRef} style={{ position: 'absolute', inset: 0, zIndex: 1 }}/>
         </div>
+
+        {phase === 'revealed' && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 5,
+              display: 'grid',
+              placeItems: 'center',
+              padding: 24,
+              pointerEvents: 'none',
+            }}>
+            <div className="glass" style={{
+              position: 'relative',
+              width: 'min(440px, calc(100vw - 48px))',
+              padding: '28px 30px 30px',
+              borderRadius: 28,
+              textAlign: 'center',
+              background: 'rgba(255,255,255,.84)',
+              border: '1px solid rgba(255,255,255,.78)',
+              boxShadow: '0 26px 70px rgba(61,46,42,.24), inset 0 1px 0 rgba(255,255,255,.8)',
+              overflow: 'hidden',
+              animation: 'float-up .42s cubic-bezier(.3,.7,.4,1.2) both',
+            }}>
+              <Sparkles count={10} color="var(--c-gold)" style={{ inset: -18 }}/>
+              <div className="eyebrow" style={{ marginBottom: 10, color: 'var(--c-coral)' }}>หมายเลขที่ได้</div>
+              <div style={{
+                position: 'relative',
+                fontFamily: 'var(--font-display)',
+                fontSize: 'clamp(76px, 16vw, 126px)',
+                lineHeight: 0.95,
+                fontWeight: 800,
+                color: 'var(--text-main)',
+                fontVariantNumeric: 'tabular-nums',
+                textShadow: '0 10px 32px rgba(242,169,0,.22)',
+              }}>
+                {displayStickNumber}
+              </div>
+              <div style={{
+                position: 'relative',
+                marginTop: 14,
+                fontSize: 15,
+                color: 'var(--text-muted)',
+                fontWeight: 500,
+              }}>
+                กำลังพาไปหน้าผลคำทำนาย...
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Overlay UI — left copy panel */}
         <div style={{
@@ -2560,28 +2672,6 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
               {Math.round(pct * 100)}%
             </span>
           </div>
-
-          {phase === 'revealed' && (
-            <div style={{
-              padding: '18px 36px', borderRadius: 999,
-              background: 'rgba(255,255,255,.7)',
-              backdropFilter: 'blur(20px) saturate(160%)',
-              WebkitBackdropFilter: 'blur(20px) saturate(160%)',
-              border: '1px solid rgba(255,255,255,.7)',
-              boxShadow: 'var(--shadow-soft)',
-              display: 'inline-flex', alignItems: 'center', gap: 12,
-              fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 500,
-              color: 'var(--text-main)',
-            }}>
-              <span style={{
-                width: 18, height: 18, borderRadius: '50%',
-                border: '2px solid var(--c-peach)',
-                borderTopColor: 'transparent',
-                animation: 'spin-mini 1s linear infinite',
-              }}/>
-              กำลังเปิดคำทำนายของคุณ...
-            </div>
-          )}
 
           <button className="btn btn-tertiary" onClick={onBack} style={{ padding: '6px 14px' }}>
             <Icon.arrowL size={14}/> กลับไปเตรียมใจ
