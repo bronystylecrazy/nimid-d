@@ -82,6 +82,9 @@ out
 .nuxt
 dist
 .output
+llm-service/output/
+llm-service/.venv/
+llm-service/src/llm_service/_generated/
 
 # Gatsby files
 .cache/
@@ -141,3 +144,4 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+llm-service/src/llm_service/__pycache__

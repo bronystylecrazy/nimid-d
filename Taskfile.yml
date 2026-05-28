@@ -2,6 +2,7 @@ version: '3'
 
 vars:
   IMAGE: oci.devsirawit.com/nimidd:latest
+  LLM_SERVICE_IMAGE: oci.devsirawit.com/nimidd-llm-service:latest
   PLATFORM: linux/arm64
 
 tasks:
@@ -20,3 +21,19 @@ tasks:
     desc: Build the Docker image locally for the configured platform
     cmds:
       - docker buildx build --platform {{.PLATFORM}} -t {{.IMAGE}} --load .
+
+  llm-service:docker:
+    desc: Build the LLM service Docker image locally, then push it
+    cmds:
+      - task llm-service:docker:build
+      - task llm-service:docker:push
+
+  llm-service:docker:push:
+    desc: Build and push the LLM service Docker image
+    cmds:
+      - docker buildx build --platform {{.PLATFORM}} -t {{.LLM_SERVICE_IMAGE}} --push ./llm-service
+
+  llm-service:docker:build:
+    desc: Build the LLM service Docker image locally for the configured platform
+    cmds:
+      - docker buildx build --platform {{.PLATFORM}} -t {{.LLM_SERVICE_IMAGE}} --load ./llm-service

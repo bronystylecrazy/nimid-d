@@ -4,10 +4,13 @@ services:
     platform: linux/arm64
     container_name: nimidd
     restart: unless-stopped
+    network_mode: host
     depends_on:
       - mqtt
-    ports:
-      - "80:80"
+      - llm-service
+    environment:
+      MQTT_BROKER_URL: mqtt://127.0.0.1:1883
+      LLM_SERVICE_URL: http://127.0.0.1:8000
     labels:
       com.centurylinklabs.watchtower.enable: "true"
 
@@ -21,6 +24,22 @@ services:
     ports:
       - "1883:1883"
       - "18883:9001"
+
+  llm-service:
+    build:
+      context: ./llm-service
+    platform: linux/arm64
+    container_name: nimidd-llm-service
+    restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      HTTP_PORT: 8000
+      LLM_OUTPUT_DIR: /app/output
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./llm-service/output:/app/output
 
   watchtower:
     image: containrrr/watchtower:latest

@@ -3,8 +3,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import { HashRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import mqtt from 'mqtt';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import './tokens.css';
 
 declare global {
@@ -13,13 +13,15 @@ declare global {
 
 window.THREE = THREE;
 const ReactDOM = { createRoot, createPortal };
-function defaultMqttShakeUrl() {
+function defaultRealtimeUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/mqtt`;
+  return `${protocol}//${window.location.host}/events`;
 }
-const MQTT_SHAKE_URL = import.meta.env.VITE_MQTT_URL || defaultMqttShakeUrl();
-const MQTT_SHAKE_TOPIC = import.meta.env.VITE_MQTT_SHAKE_TOPIC || 'v1/shake';
+const REALTIME_URL = import.meta.env.VITE_REALTIME_URL || defaultRealtimeUrl();
+const MQTT_SHAKE_TOPIC = 'v1/shake';
+const MQTT_DETECTION_TOPIC = 'v1/detection';
 const MQTT_SHAKE_EVENT = 'nimidd:mqtt-shake';
+const MQTT_DETECTION_EVENT = 'nimidd:mqtt-detection';
 const MQTT_STATUS_EVENT = 'nimidd:mqtt-status';
 
 function publishMqttStatus(status) {
@@ -1899,6 +1901,7 @@ function __palmHash(s) {
   return Math.abs(h);
 }
 function analyzePalm(user) {
+  if (user?.palmReading && Object.keys(user.palmReading).length > 0) return palmReadingFromLlm(user.palmReading);
   const seed = __palmHash((user?.name || '') + '|' + (user?.dob || ''));
   return PALM_LINES.map((L, i) => {
     const r = L.readings[(seed + i * 7) % L.readings.length];
@@ -1906,6 +1909,42 @@ function analyzePalm(user) {
   });
 }
 window.analyzePalm = analyzePalm;
+
+function palmReadingFromLlm(palmReading) {
+  const fields = {
+    heart: palmReading.heart_line,
+    head: palmReading.head_line,
+    life: palmReading.life_line,
+  };
+  return PALM_LINES.map((line) => ({
+    ...line,
+    reading: {
+      tone: 'อ่านจากลายมือ',
+      text: fields[line.id] || line.readings[0].text,
+    },
+  }));
+}
+
+async function dataUrlToBlob(dataUrl) {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+async function requestPalmReading(palmDataUrl) {
+  const blob = await dataUrlToBlob(palmDataUrl);
+  const formData = new FormData();
+  formData.append('image', blob, 'palm.jpg');
+  formData.append('dry_run', 'false');
+  const response = await fetch('/api/palm-reading', {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail || payload?.message || 'อ่านลายมือไม่สำเร็จ');
+  }
+  return payload;
+}
 
 function LoginScreen({ onContinue, initial = {} }) {
   // Detect returning user: either via passed prop (for the design canvas
@@ -1929,7 +1968,6 @@ function LoginScreen({ onContinue, initial = {} }) {
   return <RegisterForm initial={initial} onContinue={(u) => {
     try { localStorage.setItem(LS_USER_KEY, JSON.stringify(u)); } catch {}
     setSavedUser(u);
-    onContinue(u);
   }}/>;
 }
 window.LoginScreen = LoginScreen;
@@ -1939,9 +1977,36 @@ window.LoginScreen = LoginScreen;
 // ────────────────────────────
 function RegisterForm({ onContinue, initial = {} }) {
   const [name, setName] = React.useState(initial.name || '');
-  const [dob, setDob] = React.useState(initial.dob || '');
   const [palm, setPalm] = React.useState(initial.palm || null); // dataURL
-  const ready = name.trim().length >= 2 && dob && palm;
+  const [readingStatus, setReadingStatus] = React.useState('idle');
+  const [readingError, setReadingError] = React.useState('');
+  const ready = name.trim().length >= 2 && palm;
+  const analyzing = readingStatus === 'loading';
+
+  const continueWithPalmReading = async () => {
+    if (!ready || analyzing) return;
+    const user = { name: name.trim(), palm };
+    setReadingStatus('loading');
+    setReadingError('');
+    try {
+      const result = await requestPalmReading(palm);
+      const nextUser = {
+        ...user,
+        palmReading: result.reading,
+        palmReadingStatus: result.status,
+        palmReadingManifest: result.manifest,
+        palmReadingPanel: result.llm_panel_png_base64
+          ? `data:image/png;base64,${result.llm_panel_png_base64}`
+          : null,
+      };
+      setReadingStatus(result.status === 'complete' ? 'complete' : 'fallback');
+      onContinue(nextUser);
+    } catch (error) {
+      setReadingStatus('error');
+      setReadingError(error?.message || 'ยังเชื่อมต่อระบบอ่านลายมือไม่ได้ จะใช้คำอ่านพื้นฐานแทน');
+      onContinue({ ...user, palmReadingStatus: 'error' });
+    }
+  };
 
   return (
     <div className="proto" style={{ overflow: 'auto' }}>
@@ -1987,7 +2052,7 @@ function RegisterForm({ onContinue, initial = {} }) {
               </span>
             </h1>
             <p style={{ fontSize: 17, color: 'var(--text-muted)', lineHeight: 1.65, marginBottom: 28, maxWidth: 460 }}>
-              บอกชื่อ วันเกิด และฝ่ามือของคุณ เพื่อให้พิธีเซียมซีปรับให้สอดคล้องกับช่วงชีวิตของคุณมากขึ้น
+              บอกชื่อและฝ่ามือของคุณ เพื่อให้พิธีเซียมซีปรับให้สอดคล้องกับช่วงชีวิตของคุณมากขึ้น
             </p>
 
             {/* mini features */}
@@ -2032,28 +2097,27 @@ function RegisterForm({ onContinue, initial = {} }) {
                 style={inputStyle}/>
             </Field>
 
-            {/* Birthday */}
-            <Field label="วันเกิดของคุณ" hint="ใช้สำหรับคำนวณวันที่และฤดูที่เหมาะกับคุณ">
-              <input type="date" value={dob} onChange={(e) => setDob(e.target.value)}
-                style={{ ...inputStyle, fontFamily: 'inherit' }}/>
-            </Field>
-
             {/* Palm capture */}
             <Field label="ลายมือของคุณ" hint="วางฝ่ามือไว้ในกรอบ แล้วกดถ่ายภาพ">
               <PalmCapture value={palm} onChange={setPalm}/>
             </Field>
 
-            <button className="btn btn-primary" disabled={!ready}
-              onClick={() => onContinue({ name: name.trim(), dob, palm })}
+            <button className="btn btn-primary" disabled={!ready || analyzing}
+              onClick={continueWithPalmReading}
               style={{ width: '100%', marginTop: 22, padding: '16px 22px',
                 borderRadius: 18, justifyContent: 'space-between' }}>
-              <span>เข้าสู่พิธีเสี่ยงเซียมซี</span>
-              <Icon.arrowR size={18}/>
+              <span>{analyzing ? 'กำลังอ่านลายมือ...' : 'อ่านลายมือของฉัน'}</span>
+              {analyzing ? <Icon.sparkle size={18}/> : <Icon.arrowR size={18}/>}
             </button>
 
             {!ready && (
               <p style={{ fontSize: 11, color: 'var(--text-soft)', marginTop: 12, textAlign: 'center' }}>
                 กรุณากรอกข้อมูลให้ครบเพื่อเริ่มต้น
+              </p>
+            )}
+            {readingError && (
+              <p style={{ fontSize: 11, color: 'var(--c-coral)', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
+                {readingError}
               </p>
             )}
           </div>
@@ -2310,6 +2374,7 @@ function PalmIcon({ active }) {
 // ─────────────────────────────────────────────
 function WelcomeBack({ user, onContinue, onForget }) {
   const reading = React.useMemo(() => analyzePalm(user), [user]);
+  const palmConclusion = user?.palmReading?.conclusion || fallbackPalmConclusion(user);
   // Format date for display (Thai locale)
   const dobLabel = React.useMemo(() => {
     if (!user.dob) return '';
@@ -2422,6 +2487,60 @@ function WelcomeBack({ user, onContinue, onForget }) {
             ))}
           </div>
 
+          {palmConclusion && (
+            <div className="card" style={{
+              marginTop: 18,
+              padding: 26,
+              borderRadius: 24,
+              background: 'linear-gradient(160deg, rgba(242,181,160,.18), rgba(184,216,200,.14))',
+              position: 'relative',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                position: 'absolute',
+                top: -32,
+                right: -28,
+                width: 120,
+                height: 120,
+                borderRadius: '50%',
+                background: 'rgba(255,255,255,.45)',
+                pointerEvents: 'none',
+              }}/>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <div style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 12,
+                  background: 'var(--text-main)',
+                  color: 'var(--text-on-dark)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                  <Icon.sparkle size={16}/>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-soft)', letterSpacing: '.08em', textTransform: 'uppercase' }}>
+                    Palm Reading
+                  </div>
+                  <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 500, marginTop: 2 }}>
+                    บทสรุปดวงชะตา
+                  </h3>
+                </div>
+              </div>
+              <p style={{
+                fontSize: 15,
+                lineHeight: 1.8,
+                color: 'var(--text-main)',
+                maxWidth: 980,
+                textWrap: 'pretty',
+              }}>
+                {palmConclusion}
+              </p>
+            </div>
+          )}
+
           <p style={{
             fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.6,
             marginTop: 22, textAlign: 'center', maxWidth: 560, margin: '22px auto 0',
@@ -2435,6 +2554,11 @@ function WelcomeBack({ user, onContinue, onForget }) {
   );
 }
 window.WelcomeBack = WelcomeBack;
+
+function fallbackPalmConclusion(user) {
+  const name = user?.name ? `คุณ${user.name}` : 'เจ้าชะตา';
+  return `${name}มีพื้นดวงที่ค่อยๆ เติบโตจากความอดทนและการเรียนรู้ เส้นทั้งสามสะท้อนคนที่มีใจละเอียด คิดรอบด้าน และยังมีพลังชีวิตให้เดินต่อได้แม้ผ่านช่วงกดดัน บทสรุปคือจังหวะนี้เหมาะกับการตั้งใจให้มั่น ใช้สติคุมใจ และเลือกทางที่ทำให้ตัวเองมั่นคงขึ้นทีละขั้น`;
+}
 
 // ─────────────────────────────────────────────
 function PalmLineCard({ line, index }) {
@@ -3234,11 +3358,16 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
       if (!sceneApiRef.current) return;
       onShakeRef.current?.();
     };
+    const handleDetection = (event) => {
+      sceneApiRef.current?.applyDetection?.(event.detail);
+    };
     const handleStatus = (event) => setMqttStatus(event.detail);
     window.addEventListener(MQTT_SHAKE_EVENT, handleShake);
+    window.addEventListener(MQTT_DETECTION_EVENT, handleDetection);
     window.addEventListener(MQTT_STATUS_EVENT, handleStatus);
     return () => {
       window.removeEventListener(MQTT_SHAKE_EVENT, handleShake);
+      window.removeEventListener(MQTT_DETECTION_EVENT, handleDetection);
       window.removeEventListener(MQTT_STATUS_EVENT, handleStatus);
     };
   }, []);
@@ -3305,7 +3434,7 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
             <div style={{ height: 1, background: 'var(--border-soft)', margin: '14px -22px' }}/>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
               <span className="eyebrow">MQTT</span>
-              <span title={`${MQTT_SHAKE_URL} · ${MQTT_SHAKE_TOPIC}`} style={{
+              <span title={`${REALTIME_URL} · ${MQTT_SHAKE_TOPIC} · ${MQTT_DETECTION_TOPIC}`} style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
@@ -3481,86 +3610,6 @@ function initShakeScene(container, opts) {
   rim.position.set(0, 3, -3);
   scene.add(rim);
 
-  // ── Ground (round dais) ────────────────────
-  const ground = new THREE.Mesh(
-    new THREE.CylinderGeometry(6, 6.4, 0.4, 56),
-    new THREE.MeshStandardMaterial({
-      color: new THREE.Color(temple.swatch[2]).multiplyScalar(0.9),
-      roughness: 0.95, metalness: 0,
-    }),
-  );
-  ground.position.y = -0.2;
-  ground.receiveShadow = true;
-  scene.add(ground);
-
-  // inner ring
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(2.8, 3.1, 56),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(temple.accent), transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.005;
-  scene.add(ring);
-
-  // ── Decorative temple element ──────────────
-  if (temple.id === 'thai') {
-    // simple lotus pad behind
-    const lotus = new THREE.Group();
-    for (let i = 0; i < 8; i++) {
-      const petal = new THREE.Mesh(
-        new THREE.SphereGeometry(0.6, 8, 4, 0, Math.PI),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color(temple.accent), roughness: 0.7 }),
-      );
-      petal.position.set(Math.cos(i / 8 * Math.PI * 2) * 0.7, 0, Math.sin(i / 8 * Math.PI * 2) * 0.7);
-      petal.rotation.y = i / 8 * Math.PI * 2;
-      petal.scale.set(1, 0.4, 0.7);
-      lotus.add(petal);
-    }
-    lotus.position.set(0, 0.05, -3);
-    lotus.scale.setScalar(1.4);
-    scene.add(lotus);
-  } else if (temple.id === 'chinese') {
-    // two hanging lanterns
-    for (const x of [-3.2, 3.2]) {
-      const lantern = new THREE.Mesh(
-        new THREE.SphereGeometry(0.45, 16, 16),
-        new THREE.MeshStandardMaterial({
-          color: new THREE.Color(temple.accent),
-          emissive: new THREE.Color(temple.accent).multiplyScalar(0.5),
-          emissiveIntensity: 0.7,
-          roughness: 0.4,
-        }),
-      );
-      lantern.position.set(x, 2.4, -1.5);
-      lantern.scale.y = 1.3;
-      lantern.castShadow = false;
-      scene.add(lantern);
-      // string
-      const str = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.01, 0.01, 1.5),
-        new THREE.MeshBasicMaterial({ color: 0x6a5a4a }),
-      );
-      str.position.set(x, 3.4, -1.5);
-      scene.add(str);
-      lantern.userData.float = { base: 2.4, phase: x };
-    }
-  } else if (temple.id === 'japanese') {
-    // torii gate
-    const wood = new THREE.MeshStandardMaterial({ color: new THREE.Color(temple.accent), roughness: 0.7 });
-    const torii = new THREE.Group();
-    const left = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 3, 8), wood);
-    const right = left.clone();
-    left.position.set(-1.2, 1.5, 0); right.position.set(1.2, 1.5, 0);
-    const top = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.2, 0.4), wood);
-    top.position.set(0, 2.9, 0);
-    const top2 = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.12, 0.3), wood);
-    top2.position.set(0, 2.7, 0);
-    torii.add(left, right, top, top2);
-    torii.position.z = -3;
-    torii.scale.setScalar(0.8);
-    scene.add(torii);
-  }
-
   // ── Fortune box ────────────────────────────
   const boxGroup = new THREE.Group();
   scene.add(boxGroup);
@@ -3602,6 +3651,25 @@ function initShakeScene(container, opts) {
   inner.position.y = 0.71;
   inner.material.side = THREE.BackSide;
   boxGroup.add(inner);
+
+  // Solid bamboo base so the cup does not read as transparent when tilted.
+  const bottom = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.64, 0.64, 0.08, 36, 1, false),
+    bambooNodeMat,
+  );
+  bottom.position.y = 0.04;
+  bottom.castShadow = true;
+  bottom.receiveShadow = true;
+  boxGroup.add(bottom);
+
+  const innerBottom = new THREE.Mesh(
+    new THREE.CircleGeometry(0.58, 36),
+    bambooInner,
+  );
+  innerBottom.rotation.x = -Math.PI / 2;
+  innerBottom.position.y = 0.11;
+  innerBottom.receiveShadow = true;
+  boxGroup.add(innerBottom);
 
   // Bamboo node rings (joints) — slight bulges around the body at intervals.
   // Use Lathe sweeps via TorusGeometry for the bead profile.
@@ -3645,50 +3713,284 @@ function initShakeScene(container, opts) {
   // Pale/white skin tone. Hands grip the box tightly.
   const skinMat = new THREE.MeshStandardMaterial({
     color: 0xF6E4D2, roughness: 0.62, metalness: 0.02,
-    transparent: true, opacity: 0.55, depthWrite: false,
   });
   const skinShadow = new THREE.MeshStandardMaterial({
     color: 0xE5CCB5, roughness: 0.68, metalness: 0.02,
-    transparent: true, opacity: 0.55, depthWrite: false,
   });
   const sleeveMat = new THREE.MeshStandardMaterial({
     color: 0x3D2E2A, roughness: 0.85,
-    transparent: true, opacity: 0.6, depthWrite: false,
   });
+
+  const armModelLoader = new GLTFLoader();
+  const importedArmRig = {
+    loading: false,
+    loaded: false,
+    scene: null,
+    instance: null,
+    targets: null,
+    waiting: [],
+  };
+  const ENABLE_IMPORTED_ARM_RIG = false;
 
   // Helper: build a tapered cylinder segment between two world points
   function buildLimb(from, to, rTop, rBot, mat) {
-    const len = from.distanceTo(to);
-    const mid = new THREE.Vector3().addVectors(from, to).multiplyScalar(0.5);
-    const dir = new THREE.Vector3().subVectors(to, from).normalize();
     const m = new THREE.Mesh(
-      new THREE.CylinderGeometry(rTop, rBot, len, 14),
+      new THREE.CylinderGeometry(rTop, rBot, 1, 18),
       mat,
     );
-    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-    m.position.copy(mid);
     m.castShadow = true;
+    updateLimb(m, from, to);
     return m;
+  }
+
+  function updateLimb(mesh, from, to) {
+    const len = Math.max(0.001, from.distanceTo(to));
+    const mid = new THREE.Vector3().addVectors(from, to).multiplyScalar(0.5);
+    const dir = new THREE.Vector3().subVectors(to, from).normalize();
+    mesh.scale.y = len;
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    mesh.position.copy(mid);
+  }
+
+  function solveTwoBoneIK(shoulder, target, side, previousElbow) {
+    const upperLen = 2.05;
+    const lowerLen = 1.78;
+    const minFlex = 0.22;
+    const maxFlex = 2.28;
+    const toTarget = new THREE.Vector3().subVectors(target, shoulder);
+    const minDistance = Math.sqrt(upperLen * upperLen + lowerLen * lowerLen - 2 * upperLen * lowerLen * Math.cos(maxFlex));
+    const maxDistance = Math.sqrt(upperLen * upperLen + lowerLen * lowerLen - 2 * upperLen * lowerLen * Math.cos(minFlex));
+    const distance = Math.min(Math.max(toTarget.length(), minDistance), maxDistance);
+    const dir = toTarget.clone().normalize();
+    const bendHint = new THREE.Vector3(side * 0.4, -0.92, 0.38).normalize();
+    const planeNormal = new THREE.Vector3().crossVectors(dir, bendHint).normalize();
+    const bendDir = new THREE.Vector3().crossVectors(planeNormal, dir).normalize();
+    const along = (upperLen * upperLen - lowerLen * lowerLen + distance * distance) / (2 * distance);
+    const height = Math.sqrt(Math.max(0, upperLen * upperLen - along * along));
+    const solved = new THREE.Vector3()
+      .copy(shoulder)
+      .add(dir.multiplyScalar(along))
+      .add(bendDir.multiplyScalar(height));
+    if (!previousElbow) return solved;
+    const minX = side > 0 ? 0.42 : -1.95;
+    const maxX = side > 0 ? 1.95 : -0.42;
+    solved.x = clampValue(solved.x, minX, maxX);
+    solved.y = clampValue(solved.y, 0.34, 2.1);
+    solved.z = clampValue(solved.z, 0.75, 3.5);
+    return solved;
+  }
+
+  function aimBoneLikeObject(object, from, to) {
+    const dir = new THREE.Vector3().subVectors(to, from).normalize();
+    object.position.copy(from);
+    object.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  }
+
+  function normalizeArmModel(model, side) {
+    const wrapper = new THREE.Group();
+    wrapper.name = side < 0 ? 'imported-static-arm-left' : 'imported-static-arm-right';
+    wrapper.add(model);
+
+    const box = new THREE.Box3().setFromObject(model);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    const longest = Math.max(size.x, size.y, size.z) || 1;
+    model.scale.setScalar(2.95 / longest);
+    model.position.sub(center.multiplyScalar(model.scale.x));
+    model.rotation.y = side < 0 ? Math.PI : 0;
+    model.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach((m) => { m.transparent = false; m.opacity = 1; });
+          else { child.material.transparent = false; child.material.opacity = 1; }
+        }
+      }
+    });
+    return wrapper;
+  }
+
+  function fitCombinedArmRig(model) {
+    const wrapper = new THREE.Group();
+    wrapper.name = 'imported-combined-human-arms';
+    wrapper.add(model);
+
+    const box = new THREE.Box3().setFromObject(model);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    const longest = Math.max(size.x, size.y, size.z) || 1;
+    model.scale.setScalar(3.85 / longest);
+    model.position.sub(center.multiplyScalar(model.scale.x));
+    model.position.y += 0.18;
+    model.position.z += 0.08;
+    wrapper.rotation.x = Math.PI;
+    wrapper.position.y = 0.48;
+    wrapper.position.z = 0.1;
+    model.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach((m) => { m.transparent = false; m.opacity = 1; });
+          else { child.material.transparent = false; child.material.opacity = 1; }
+        }
+      }
+    });
+    return wrapper;
+  }
+
+  function findRigTargets(root) {
+    const targets = {};
+    root.traverse((child) => {
+      if (!child.name) return;
+      targets[child.name] = child;
+    });
+    return {
+      leftWristIk: targets['wrist_ik.l'] || null,
+      rightWristIk: targets['wrist_ik.r'] || null,
+      leftArmTarget: targets['arm_target.l'] || null,
+      rightArmTarget: targets['arm_target.r'] || null,
+      leftShoulder: targets['shoulder.l'] || null,
+      rightShoulder: targets['shoulder.r'] || null,
+      leftBicep: targets['bicep.l'] || null,
+      rightBicep: targets['bicep.r'] || null,
+      leftWrist: targets['wrist.l'] || null,
+      rightWrist: targets['wrist.r'] || null,
+      leftForearm: targets['forearm.l'] || null,
+      rightForearm: targets['forearm.r'] || null,
+    };
+  }
+
+  function setObjectWorldPosition(object, position) {
+    if (!object || !object.parent) return;
+    object.parent.updateMatrixWorld(true);
+    object.position.copy(object.parent.worldToLocal(position.clone()));
+  }
+
+  function setBoneWorldAim(bone, from, to, roll = 0) {
+    if (!bone || !bone.parent) return;
+    const dir = new THREE.Vector3().subVectors(to, from);
+    if (dir.lengthSq() < 0.000001) return;
+    dir.normalize();
+    bone.parent.updateMatrixWorld(true);
+    const desiredWorldQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    if (roll) desiredWorldQuat.multiply(new THREE.Quaternion().setFromAxisAngle(dir, roll));
+    const parentWorldQuat = new THREE.Quaternion();
+    bone.parent.getWorldQuaternion(parentWorldQuat);
+    bone.quaternion.copy(parentWorldQuat.invert().multiply(desiredWorldQuat));
+    bone.updateMatrixWorld(true);
+  }
+
+  function setBoneWorldPosition(bone, position) {
+    if (!bone || !bone.parent) return;
+    bone.parent.updateMatrixWorld(true);
+    bone.position.copy(bone.parent.worldToLocal(position.clone()));
+    bone.updateMatrixWorld(true);
+  }
+
+  function attachCombinedArmRig(ik) {
+    if (!importedArmRig.scene) return false;
+    if (!importedArmRig.instance) {
+      importedArmRig.instance = fitCombinedArmRig(importedArmRig.scene);
+      importedArmRig.targets = findRigTargets(importedArmRig.instance);
+      scene.add(importedArmRig.instance);
+    }
+    ik.importedModel = importedArmRig.instance;
+    ik.fallbackRoot.visible = false;
+    return true;
+  }
+
+  function loadCombinedArmRig(ik) {
+    if (!ENABLE_IMPORTED_ARM_RIG) {
+      ik.fallbackRoot.visible = true;
+      return false;
+    }
+    if (importedArmRig.loaded) return attachCombinedArmRig(ik);
+    importedArmRig.waiting.push(ik);
+    if (importedArmRig.loading) return true;
+    importedArmRig.loading = true;
+    const tryPaths = ['/models/arms.glb', '/models/human-arms.glb'];
+    const tryNext = (index) => {
+      if (index >= tryPaths.length) {
+        importedArmRig.waiting.splice(0).forEach((waitingIk) => {
+          loadStaticArmModel(waitingIk.side, waitingIk, waitingIk.fallbackRoot);
+        });
+        return;
+      }
+      armModelLoader.load(
+        tryPaths[index],
+        (gltf) => {
+          importedArmRig.loaded = true;
+          importedArmRig.scene = gltf.scene;
+          importedArmRig.waiting.splice(0).forEach((waitingIk) => {
+            attachCombinedArmRig(waitingIk);
+          });
+        },
+        undefined,
+        () => tryNext(index + 1),
+      );
+    };
+    tryNext(0);
+    return true;
+  }
+
+  function loadStaticArmModel(side, ik, fallbackRoot) {
+    const sideName = side < 0 ? 'left' : 'right';
+    armModelLoader.load(
+      `/models/human-arm-${sideName}.glb`,
+      (gltf) => {
+        const imported = normalizeArmModel(gltf.scene, side);
+        imported.visible = true;
+        ik.modelRoot.add(imported);
+        ik.importedModel = imported;
+        fallbackRoot.visible = false;
+      },
+      undefined,
+      () => {
+        fallbackRoot.visible = true;
+      },
+    );
   }
 
   function buildHand(side) {
     const g = new THREE.Group();
+    const fallbackRoot = new THREE.Group();
+    g.add(fallbackRoot);
 
     // Joint positions in boxGroup-local coords. Hand position is at the
     // palm; fingertips land ON the cylinder's front surface so the camera
     // sees them gripping the visible side of the box.
-    const shoulderAt = new THREE.Vector3(side * 1.15, 2.05, 4.30);
+    const shoulderAt = new THREE.Vector3(side * 1.55, 2.25, 4.35);
     const elbowAt    = new THREE.Vector3(side * 1.20, 1.05, 2.10);
     const wristAt    = new THREE.Vector3(side * 0.95, 0.78, 0.30);
     const palmAt     = new THREE.Vector3(side * 0.76, 0.78, 0.22);
+    const modelRoot = new THREE.Group();
+    modelRoot.position.copy(wristAt);
+    g.add(modelRoot);
+
+    const shoulderBone = new THREE.Bone();
+    shoulderBone.name = side < 0 ? 'left_shoulder_ik' : 'right_shoulder_ik';
+    const elbowBone = new THREE.Bone();
+    elbowBone.name = side < 0 ? 'left_elbow_hinge_ik' : 'right_elbow_hinge_ik';
+    const wristBone = new THREE.Bone();
+    wristBone.name = side < 0 ? 'left_wrist_target_ik' : 'right_wrist_target_ik';
+    shoulderBone.add(elbowBone);
+    elbowBone.add(wristBone);
+    g.add(shoulderBone);
 
     // ── Upper arm ───────────────────────────
-    g.add(buildLimb(shoulderAt, elbowAt, 0.21, 0.17, skinShadow));
+    const upperArm = buildLimb(shoulderAt, elbowAt, 0.21, 0.17, skinShadow);
+    fallbackRoot.add(upperArm);
     const shoulder = new THREE.Mesh(
       new THREE.SphereGeometry(0.24, 14, 12), skinShadow,
     );
     shoulder.position.copy(shoulderAt);
-    g.add(shoulder);
+    fallbackRoot.add(shoulder);
 
     // ── Elbow joint ─────────────────────────
     const elbow = new THREE.Mesh(
@@ -3696,10 +3998,11 @@ function initShakeScene(container, opts) {
     );
     elbow.position.copy(elbowAt);
     elbow.castShadow = true;
-    g.add(elbow);
+    fallbackRoot.add(elbow);
 
     // ── Forearm ─────────────────────────────
-    g.add(buildLimb(elbowAt, wristAt, 0.16, 0.13, skinMat));
+    const forearm = buildLimb(elbowAt, wristAt, 0.16, 0.13, skinMat);
+    fallbackRoot.add(forearm);
 
     // ── Sleeve cuff (dark band where shirt ends at wrist) ──
     const cuffDir = new THREE.Vector3().subVectors(wristAt, elbowAt).normalize();
@@ -3708,18 +4011,22 @@ function initShakeScene(container, opts) {
     );
     cuff.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), cuffDir);
     cuff.position.copy(wristAt).add(cuffDir.clone().multiplyScalar(-0.10));
-    g.add(cuff);
+    fallbackRoot.add(cuff);
+
+    const handMesh = new THREE.Group();
+    handMesh.position.copy(wristAt);
+    fallbackRoot.add(handMesh);
 
     // ── Palm — block, oriented so its thin axis lies along radius ──
     // Default BoxGeometry axes after rotation.y = ±π/2: width(X) becomes depth(Z).
     const palm = new THREE.Mesh(
       new THREE.BoxGeometry(0.32, 0.34, 0.20), skinMat,
     );
-    palm.position.copy(palmAt);
+    palm.position.set(0, 0, 0);
     palm.rotation.y = side * Math.PI * 0.5; // thin face toward box (radial)
     palm.castShadow = true;
     palm.receiveShadow = true;
-    g.add(palm);
+    handMesh.add(palm);
 
     // Knuckle bumps on the back-of-hand (camera-facing side, +Z direction)
     for (let i = 0; i < 4; i++) {
@@ -3727,62 +4034,85 @@ function initShakeScene(container, opts) {
         new THREE.SphereGeometry(0.045, 10, 8), skinShadow,
       );
       k.position.set(
-        palmAt.x + side * -0.02, // slightly inboard so they read on back
-        palmAt.y + 0.13 - i * 0.07,
-        palmAt.z + 0.14,
+        side * -0.02, // slightly inboard so they read on back
+        0.13 - i * 0.07,
+        0.14,
       );
-      g.add(k);
+      handMesh.add(k);
     }
 
     // ── Thumb — base on top-inner of palm, wraps over the top edge of the
     // box and reaches forward. Two segments + tip sphere.
-    const thumbBase = new THREE.Vector3(side * 0.62, palmAt.y + 0.18, palmAt.z + 0.02);
-    const thumbMid  = new THREE.Vector3(side * 0.40, palmAt.y + 0.32, palmAt.z + 0.20);
-    const thumbTipP = new THREE.Vector3(side * 0.16, palmAt.y + 0.30, palmAt.z + 0.42);
-    g.add(buildLimb(thumbBase, thumbMid, 0.070, 0.062, skinMat));
-    g.add(buildLimb(thumbMid,  thumbTipP, 0.062, 0.055, skinMat));
+    const thumbBase = new THREE.Vector3(side * 0.62 - palmAt.x, 0.18, 0.02);
+    const thumbMid  = new THREE.Vector3(side * 0.40 - palmAt.x, 0.32, 0.20);
+    const thumbTipP = new THREE.Vector3(side * 0.16 - palmAt.x, 0.30, 0.42);
+    handMesh.add(buildLimb(thumbBase, thumbMid, 0.070, 0.062, skinMat));
+    handMesh.add(buildLimb(thumbMid,  thumbTipP, 0.062, 0.055, skinMat));
     const thumbJ = new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 8), skinMat);
-    thumbJ.position.copy(thumbMid); g.add(thumbJ);
+    thumbJ.position.copy(thumbMid); handMesh.add(thumbJ);
     const thumbTipS = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skinMat);
-    thumbTipS.position.copy(thumbTipP); g.add(thumbTipS);
+    thumbTipS.position.copy(thumbTipP); handMesh.add(thumbTipS);
 
-    // ── 4 fingers — fingertips wrap AROUND TO THE BACK of the box, and now
-    // sit INSIDE the bamboo's outer wall (R_TIP < body radius 0.66) so the
-    // bamboo body itself occludes them from the camera — no more pokey tips.
-    const R_TIP    = 0.60;  // INSIDE bamboo body — hidden by cylinder wall
-    const R_KNUCK  = 0.76;  // knuckle just outside surface (visible)
-    // Angles measured CW from +X axis (toward -Z). Tightly clustered behind
-    // the box; |x| stays well within the cylinder silhouette.
-    const ANGLES   = [50, 72, 94, 116];
+    // ── 4 fingers — curled around the side of the bamboo without entering
+    // the cup wall. Keep every point outside radius 0.66 to avoid clipping
+    // through the bamboo rings when the cup tilts.
     const Y_OFFS   = [0.10, 0.03, -0.05, -0.14];
-    ANGLES.forEach((deg, i) => {
-      const rad = deg * Math.PI / 180;
-      // Finger ends at the bamboo's outer surface (R=0.66) — no tip sphere
-      // protrudes past the wall, so no visible fingertip.
-      const fingerEndPos = new THREE.Vector3(
-        side * 0.66 * Math.cos(rad),
-        palmAt.y + Y_OFFS[i],
-        -0.66 * Math.sin(rad),
-      );
-      const radK = deg * 0.45 * Math.PI / 180;
+    Y_OFFS.forEach((yOff, i) => {
+      const spread = (i - 1.5) * 0.035;
       const knuckPos = new THREE.Vector3(
-        side * R_KNUCK * Math.cos(radK),
-        palmAt.y + Y_OFFS[i],
-        -R_KNUCK * Math.sin(radK),
+        side * (0.83 + Math.abs(spread) * 0.25) - palmAt.x,
+        yOff,
+        0.18 + spread - palmAt.z,
       );
-      g.add(buildLimb(knuckPos, fingerEndPos, 0.055, 0.048, skinMat));
+      const midPos = new THREE.Vector3(
+        side * 0.78 - palmAt.x,
+        yOff - 0.015,
+        -0.06 + spread - palmAt.z,
+      );
+      const fingerEndPos = new THREE.Vector3(
+        side * 0.72 - palmAt.x,
+        yOff - 0.025,
+        -0.22 + spread * 0.7 - palmAt.z,
+      );
+      handMesh.add(buildLimb(knuckPos, midPos, 0.055, 0.05, skinMat));
+      handMesh.add(buildLimb(midPos, fingerEndPos, 0.05, 0.043, skinMat));
       const k = new THREE.Mesh(new THREE.SphereGeometry(0.060, 10, 8), skinMat);
-      k.position.copy(knuckPos); g.add(k);
-      // Fingertip removed — finger reads as curled into the bamboo, no protruding tip
+      k.position.copy(knuckPos); handMesh.add(k);
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), skinMat);
+      tip.position.copy(fingerEndPos); handMesh.add(tip);
     });
 
+    g.userData.ik = {
+      side,
+      shoulderAt,
+      shoulder,
+      elbow,
+      upperArm,
+      forearm,
+      cuff,
+      cuffDir,
+      palm,
+      handMesh,
+      palmLocal: palmAt.clone(),
+      gripLocal: new THREE.Vector3(side * 0.76, 0.78, 0.22),
+      modelRoot,
+      fallbackRoot,
+      shoulderBone,
+      elbowBone,
+      wristBone,
+      smoothWrist: wristAt.clone(),
+      smoothElbow: elbowAt.clone(),
+      smoothQuat: new THREE.Quaternion(),
+      hingeLimits: { minFlex: 0.22, maxFlex: 2.28 },
+    };
+    loadCombinedArmRig(g.userData.ik);
     return g;
   }
 
   const handL = buildHand(-1);
   const handR = buildHand(+1);
-  boxGroup.add(handL);
-  boxGroup.add(handR);
+  scene.add(handL);
+  scene.add(handR);
   // ── Fortune scrolls (ม้วนคำทำนาย) inside the bamboo ───────────
   // Each scroll = cream paper cylinder with a colored ribbon top.
   const stickMat = new THREE.MeshStandardMaterial({
@@ -3846,7 +4176,14 @@ function initShakeScene(container, opts) {
       Math.random() * Math.PI,
       (Math.random() - 0.5) * 0.3,
     );
-    s.userData = { home: s.position.clone(), homeRot: s.rotation.clone(), wiggle: 0, special: false };
+    s.userData = {
+      home: s.position.clone(),
+      homeRot: s.rotation.clone(),
+      vel: new THREE.Vector3(),
+      angularVel: new THREE.Vector3(),
+      wiggle: 0,
+      special: false,
+    };
     boxGroup.add(s);
     sticks.push(s);
   }
@@ -3884,10 +4221,34 @@ function initShakeScene(container, opts) {
   hitArea.userData.isBoxHit = true;
   boxGroup.add(hitArea);
 
+  const clampValue = (v, min, max) => Math.max(min, Math.min(max, Number(v) || 0));
+  const identityQuat = new THREE.Quaternion();
+  const MAX_CUP_TILT_RAD = Math.PI / 4;
+
+  function limitCupTilt(quat) {
+    const euler = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+    const tilt = Math.hypot(euler.x, euler.z);
+    if (tilt <= MAX_CUP_TILT_RAD) return quat;
+    const scale = MAX_CUP_TILT_RAD / tilt;
+    euler.x *= scale;
+    euler.z *= scale;
+    quat.setFromEuler(euler);
+    return quat;
+  }
+
   // Shake state
   const state = {
     shakeTime: 0,
     shakeIntensity: 0,
+    motionForce: 0,
+    accelBaseline: null,
+    orientationSamples: [],
+    gyroRot: { x: 0, y: 0, z: 0 },
+    targetQuat: new THREE.Quaternion(),
+    currentQuat: new THREE.Quaternion(),
+    impulseQuat: new THREE.Quaternion(),
+    vel: { x: 0, y: 0, z: 0 },
+    angularVel: { x: 0, y: 0, z: 0 },
     revealing: false,
     revealTime: 0,
     glowStrength: 0,
@@ -3927,9 +4288,6 @@ function initShakeScene(container, opts) {
     camera.position.x = Math.sin(t * 0.15) * 0.5;
     camera.lookAt(0, 0.6, 0);
 
-    // ring breathe
-    ring.material.opacity = 0.3 + Math.sin(t * 0.8) * 0.1;
-
     // particles drift
     const arr = partGeo.attributes.position.array;
     for (let i = 0; i < PCOUNT; i++) {
@@ -3946,24 +4304,143 @@ function initShakeScene(container, opts) {
       }
     });
 
+    // IMU-driven orientation. Detection samples are averaged before setting
+    // targetQuat, then the cup uses slerp so orientation changes are smooth.
+    state.currentQuat.slerp(state.targetQuat, 0.06);
+    state.motionForce *= 0.82;
+    state.vel.x = (state.vel.x - boxGroup.position.x * 0.09) * 0.82;
+    state.vel.y = (state.vel.y - boxGroup.position.y * 0.08) * 0.84;
+    state.vel.z = (state.vel.z - boxGroup.position.z * 0.09) * 0.82;
+    boxGroup.position.x = clampValue(boxGroup.position.x + state.vel.x, -0.34, 0.34);
+    boxGroup.position.y = clampValue(boxGroup.position.y + state.vel.y, -0.16, 0.22);
+    boxGroup.position.z = clampValue(boxGroup.position.z + state.vel.z, -0.22, 0.22);
+    state.angularVel.x *= 0.86;
+    state.angularVel.y *= 0.88;
+    state.angularVel.z *= 0.86;
+    const angularStep = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+      state.angularVel.x,
+      state.angularVel.y,
+      state.angularVel.z,
+    ));
+    state.impulseQuat.multiply(angularStep).normalize();
+    state.impulseQuat.slerp(identityQuat, 0.05);
+
     // shake animation
-    if (state.shakeIntensity > 0) {
+    const jitter = state.shakeIntensity + state.motionForce;
+    if (jitter > 0.001) {
       state.shakeIntensity *= 0.88;
-      boxGroup.position.x = (Math.random() - 0.5) * state.shakeIntensity;
-      boxGroup.position.z = (Math.random() - 0.5) * state.shakeIntensity * 0.5;
-      boxGroup.rotation.z = (Math.random() - 0.5) * state.shakeIntensity * 0.3;
-      // sticks rattle
-      sticks.forEach((s, i) => {
-        if (s.userData.special && state.revealing) return;
-        const h = s.userData.home;
-        s.position.x = h.x + (Math.random() - 0.5) * state.shakeIntensity * 0.5;
-        s.position.z = h.z + (Math.random() - 0.5) * state.shakeIntensity * 0.5;
-        s.rotation.z = s.userData.homeRot.z + (Math.random() - 0.5) * state.shakeIntensity * 0.3;
-      });
-    } else {
-      boxGroup.position.x *= 0.85; boxGroup.position.z *= 0.85;
-      boxGroup.rotation.z *= 0.85;
     }
+    sticks.forEach((s) => {
+      if (s.userData.special && state.revealing) return;
+      const h = s.userData.home;
+      const hr = s.userData.homeRot;
+      const v = s.userData.vel;
+      const av = s.userData.angularVel;
+      const cupImpulseX = state.vel.x * 0.35 + state.angularVel.z * 0.18;
+      const cupImpulseZ = state.vel.z * 0.35 - state.angularVel.x * 0.18;
+
+      v.x += -cupImpulseX + (Math.random() - 0.5) * jitter * 0.012;
+      v.z += -cupImpulseZ + (Math.random() - 0.5) * jitter * 0.012;
+      v.y += Math.abs(cupImpulseX + cupImpulseZ) * 0.012 + jitter * 0.004;
+      v.x += (h.x - s.position.x) * 0.08;
+      v.z += (h.z - s.position.z) * 0.08;
+      v.y += (h.y - s.position.y) * 0.12;
+      v.multiplyScalar(0.82);
+
+      s.position.add(v);
+      s.position.y = clampValue(s.position.y, 0.92, 1.2);
+      const radius = Math.hypot(s.position.x, s.position.z);
+      const maxRadius = 0.49;
+      if (radius > maxRadius) {
+        const scale = maxRadius / radius;
+        s.position.x *= scale;
+        s.position.z *= scale;
+        v.x *= -0.35;
+        v.z *= -0.35;
+      }
+
+      av.x += v.z * 0.18 + state.angularVel.x * 0.08;
+      av.z += -v.x * 0.18 + state.angularVel.z * 0.08;
+      av.y += state.angularVel.y * 0.04;
+      av.multiplyScalar(0.78);
+
+      s.rotation.x = clampValue(s.rotation.x + av.x + (hr.x - s.rotation.x) * 0.08, hr.x - 0.32, hr.x + 0.32);
+      s.rotation.y = hr.y + clampValue((s.rotation.y - hr.y + av.y) * 0.9, -0.22, 0.22);
+      s.rotation.z = clampValue(s.rotation.z + av.z + (hr.z - s.rotation.z) * 0.08, hr.z - 0.32, hr.z + 0.32);
+    });
+    boxGroup.quaternion.copy(state.currentQuat).multiply(state.impulseQuat);
+    limitCupTilt(boxGroup.quaternion);
+    if (jitter > 0.001) {
+      const jitterQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        (Math.random() - 0.5) * jitter * 0.08,
+        (Math.random() - 0.5) * jitter * 0.08,
+        (Math.random() - 0.5) * jitter * 0.22,
+      ));
+      boxGroup.quaternion.multiply(jitterQuat);
+      limitCupTilt(boxGroup.quaternion);
+    }
+
+    [handL, handR].forEach((hand) => {
+      const ik = hand.userData.ik;
+      const shoulder = ik.shoulderAt;
+      const targetWrist = boxGroup.localToWorld(ik.gripLocal.clone());
+      ik.smoothWrist.lerp(targetWrist, 0.18);
+      const elbowPos = solveTwoBoneIK(shoulder, ik.smoothWrist, ik.side, ik.smoothElbow);
+      ik.smoothElbow.lerp(elbowPos, 0.16);
+
+      updateLimb(ik.upperArm, shoulder, ik.smoothElbow);
+      updateLimb(ik.forearm, ik.smoothElbow, ik.smoothWrist);
+      ik.shoulder.position.copy(shoulder);
+      ik.elbow.position.copy(ik.smoothElbow);
+
+      const forearmDir = new THREE.Vector3().subVectors(ik.smoothWrist, ik.smoothElbow).normalize();
+      ik.cuff.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), forearmDir);
+      ik.cuff.position.copy(ik.smoothWrist).add(forearmDir.clone().multiplyScalar(-0.1));
+
+      const upperDir = new THREE.Vector3().subVectors(ik.smoothElbow, shoulder).normalize();
+      const lowerDir = new THREE.Vector3().subVectors(ik.smoothWrist, ik.smoothElbow).normalize();
+      const upperQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), upperDir);
+      const lowerQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), lowerDir);
+      ik.shoulderBone.position.copy(shoulder);
+      ik.shoulderBone.quaternion.copy(upperQuat);
+      ik.elbowBone.position.set(0, shoulder.distanceTo(ik.smoothElbow), 0);
+      ik.elbowBone.quaternion.copy(upperQuat.clone().invert().multiply(lowerQuat));
+      ik.wristBone.position.set(0, ik.smoothElbow.distanceTo(ik.smoothWrist), 0);
+      ik.wristBone.quaternion.identity();
+
+      ik.smoothQuat.slerp(boxGroup.quaternion, 0.2);
+      if (importedArmRig.instance && ik.importedModel === importedArmRig.instance) {
+        const targets = importedArmRig.targets;
+        const shoulderBone = ik.side < 0 ? targets?.leftShoulder : targets?.rightShoulder;
+        const bicepBone = ik.side < 0 ? targets?.leftBicep : targets?.rightBicep;
+        const forearmBone = ik.side < 0 ? targets?.leftForearm : targets?.rightForearm;
+        const wristBone = ik.side < 0 ? targets?.leftWrist : targets?.rightWrist;
+        const wristTarget = ik.side < 0 ? targets?.leftWristIk : targets?.rightWristIk;
+        const armTarget = ik.side < 0 ? targets?.leftArmTarget : targets?.rightArmTarget;
+        const shoulderOffset = new THREE.Vector3(ik.side * -0.24, -0.18, -0.08);
+        const modelShoulder = shoulder.clone().add(shoulderOffset);
+        const modelElbow = ik.smoothElbow.clone().add(new THREE.Vector3(ik.side * -0.12, -0.04, -0.02));
+        const modelWrist = ik.smoothWrist.clone().add(new THREE.Vector3(ik.side * -0.04, 0.02, 0.02));
+        const elbowHint = modelElbow.clone().add(new THREE.Vector3(ik.side * 0.25, -0.08, 0.15));
+        importedArmRig.instance.updateMatrixWorld(true);
+        setBoneWorldPosition(shoulderBone, modelShoulder);
+        setBoneWorldPosition(bicepBone, modelShoulder);
+        setBoneWorldPosition(forearmBone, modelElbow);
+        setBoneWorldPosition(wristBone, modelWrist);
+        setBoneWorldAim(bicepBone, modelShoulder, modelElbow, ik.side * 0.04);
+        setBoneWorldAim(forearmBone, modelElbow, modelWrist, ik.side * -0.1);
+        setBoneWorldAim(wristBone, modelWrist, modelWrist.clone().add(new THREE.Vector3(ik.side * -0.08, 0.08, -0.35)), ik.side * 0.2);
+        setObjectWorldPosition(wristTarget, modelWrist);
+        setObjectWorldPosition(armTarget, elbowHint);
+      } else {
+        ik.modelRoot.position.copy(ik.smoothWrist);
+        ik.modelRoot.quaternion.copy(ik.smoothQuat);
+        ik.modelRoot.rotation.y += ik.side * Math.PI * 0.5;
+      }
+
+      ik.handMesh.position.copy(ik.smoothWrist);
+      ik.handMesh.quaternion.copy(ik.smoothQuat);
+    });
 
     // reveal animation: special stick rises out, then falls to the ground
     if (state.revealing) {
@@ -4047,6 +4524,70 @@ function initShakeScene(container, opts) {
       });
     },
     shake: () => { state.shakeIntensity = Math.min(0.35, state.shakeIntensity + 0.12); },
+    applyDetection: (d) => {
+      if (!d) return;
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, Number(v) || 0));
+      const accelX = clamp(d.accel_x_g, -2, 2);
+      const accelY = clamp(d.accel_y_g, -2, 2);
+      const accelZ = clamp(d.accel_z_g, -2, 2);
+      const gyroX = clamp(d.gyro_x_dps, -720, 720);
+      const gyroY = clamp(d.gyro_y_dps, -720, 720);
+      const gyroZ = clamp(d.gyro_z_dps, -720, 720);
+
+      if (!state.accelBaseline) {
+        state.accelBaseline = { x: accelX, y: accelY, z: accelZ };
+      }
+      const baselineAlpha = d.is_shaking ? 0.004 : 0.03;
+      state.accelBaseline.x += (accelX - state.accelBaseline.x) * baselineAlpha;
+      state.accelBaseline.y += (accelY - state.accelBaseline.y) * baselineAlpha;
+      state.accelBaseline.z += (accelZ - state.accelBaseline.z) * baselineAlpha;
+
+      const deltaAccelX = accelX - state.accelBaseline.x;
+      const deltaAccelY = accelY - state.accelBaseline.y;
+      const deltaAccelZ = accelZ - state.accelBaseline.z;
+      const deltaAccelMagnitude = Math.hypot(deltaAccelX, deltaAccelY, deltaAccelZ);
+      const accelForce = Math.max(0, deltaAccelMagnitude - 0.025) / 0.55;
+      const gyroMagnitude = clamp(d.gyro_magnitude_dps ?? Math.hypot(gyroX, gyroY, gyroZ), 0, 720) / 720;
+      const gyroForce = Math.max(0, gyroMagnitude - 0.004) * 0.18;
+      const force = Math.max(accelForce, gyroForce);
+
+      const dead = (value, threshold) => Math.abs(value) < threshold ? 0 : value;
+      const filteredAccelX = dead(deltaAccelX, 0.025);
+      const filteredAccelY = dead(deltaAccelY, 0.025);
+      const filteredAccelZ = dead(deltaAccelZ, 0.025);
+      const filteredGyroX = dead(gyroX, 2.0);
+      const filteredGyroY = dead(gyroY, 2.0);
+      const filteredGyroZ = dead(gyroZ, 2.0);
+
+      state.gyroRot.x = clamp((state.gyroRot.x + filteredGyroX * 0.000045) * 0.9, -0.16, 0.16);
+      state.gyroRot.y = clamp((state.gyroRot.y + filteredGyroY * 0.00003) * 0.9, -0.1, 0.1);
+      state.gyroRot.z = clamp((state.gyroRot.z + filteredGyroZ * 0.000045) * 0.9, -0.16, 0.16);
+
+      state.orientationSamples.push({
+        x: clamp(-filteredAccelY * 0.16 + filteredAccelZ * 0.025 + state.gyroRot.x, -0.22, 0.22),
+        y: state.gyroRot.y,
+        z: clamp(filteredAccelX * 0.16 + state.gyroRot.z, -0.22, 0.22),
+      });
+      if (state.orientationSamples.length > 18) state.orientationSamples.shift();
+      const avg = state.orientationSamples.reduce((acc, sample) => {
+        acc.x += sample.x;
+        acc.y += sample.y;
+        acc.z += sample.z;
+        return acc;
+      }, { x: 0, y: 0, z: 0 });
+      avg.x /= state.orientationSamples.length;
+      avg.y /= state.orientationSamples.length;
+      avg.z /= state.orientationSamples.length;
+      state.targetQuat.setFromEuler(new THREE.Euler(avg.x, avg.y, avg.z, 'YXZ'));
+
+      state.vel.x += filteredAccelY * 0.018 * (1 + accelForce);
+      state.vel.y += filteredAccelZ * 0.008 * (1 + accelForce);
+      state.vel.z += filteredAccelX * -0.014 * (1 + accelForce);
+      state.angularVel.x += filteredAccelZ * 0.012 + filteredGyroX * 0.00008;
+      state.angularVel.y += filteredGyroY * 0.00004;
+      state.angularVel.z += -filteredAccelX * 0.018 + filteredGyroZ * 0.00008;
+      state.motionForce = Math.min(0.26, Math.max(state.motionForce, force * (d.is_shaking ? 0.32 : 0.07)));
+    },
     revealStick: () => { state.revealing = true; state.revealTime = 0; },
   };
 }
@@ -6267,72 +6808,68 @@ function navLinkStyle(active) {
 
 function RoutedApp() {
   React.useEffect(() => {
-    const client = mqtt.connect(MQTT_SHAKE_URL, {
-      clean: true,
-      clientId: `nimidd_frontend_${Math.random().toString(16).slice(2)}`,
-      connectTimeout: 5000,
-      keepalive: 15,
-      reconnectPeriod: 1000,
-      resubscribe: true,
-    });
+    let socket = null;
     let reconnectTimer = null;
+    let stopped = false;
 
     const scheduleReconnect = () => {
-      if (reconnectTimer || client.connected || client.reconnecting) return;
+      if (stopped || reconnectTimer) return;
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
-        if (!client.connected) client.reconnect();
+        connect();
       }, 1000);
     };
 
-    window.__mqttStatus = 'connecting';
-    publishMqttStatus('connecting');
+    const connect = () => {
+      window.__mqttStatus = socket ? 'reconnecting' : 'connecting';
+      publishMqttStatus(window.__mqttStatus);
 
-    client.on('connect', () => {
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      window.__mqttStatus = 'connected';
-      publishMqttStatus('connected');
-      client.subscribe(MQTT_SHAKE_TOPIC, (err) => {
-        if (!err) return;
-        window.__mqttStatus = 'subscribe-error';
-        publishMqttStatus('subscribe-error');
+      socket = new WebSocket(REALTIME_URL);
+      socket.addEventListener('open', () => {
+        window.__mqttStatus = 'connected';
+        publishMqttStatus('connected');
       });
-    });
+      socket.addEventListener('message', (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        window.__lastMqttMessage = {
+          topic: String(message.topic || ''),
+          payload: message.payload || '',
+          data: message.data || null,
+          at: message.at || new Date().toISOString(),
+        };
+        if (message.topic === MQTT_SHAKE_TOPIC) {
+          window.dispatchEvent(new CustomEvent(MQTT_SHAKE_EVENT));
+        }
+        if (message.topic === MQTT_DETECTION_TOPIC && message.data) {
+          window.dispatchEvent(new CustomEvent(MQTT_DETECTION_EVENT, { detail: message.data }));
+        }
+      });
+      socket.addEventListener('close', () => {
+        window.__mqttStatus = 'closed';
+        publishMqttStatus('closed');
+        scheduleReconnect();
+      });
+      socket.addEventListener('error', () => {
+        window.__mqttStatus = 'error';
+        publishMqttStatus('error');
+        socket?.close();
+      });
+    };
 
-    client.on('reconnect', () => {
-      window.__mqttStatus = 'reconnecting';
-      publishMqttStatus('reconnecting');
-    });
-    client.on('offline', () => {
-      window.__mqttStatus = 'offline';
-      publishMqttStatus('offline');
-      scheduleReconnect();
-    });
-    client.on('close', () => {
-      window.__mqttStatus = 'closed';
-      publishMqttStatus('closed');
-      scheduleReconnect();
-    });
-    client.on('error', () => {
-      window.__mqttStatus = 'error';
-      publishMqttStatus('error');
-      scheduleReconnect();
-    });
-    client.on('message', (topic, payload) => {
-      window.__lastMqttMessage = {
-        topic: String(topic),
-        payload: payload?.toString?.() || '',
-        at: new Date().toISOString(),
-      };
-      if (isShakeTopic(topic)) window.dispatchEvent(new CustomEvent(MQTT_SHAKE_EVENT));
-    });
+    connect();
 
     return () => {
+      stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      client.end(true);
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      };
     };
   }, []);
 

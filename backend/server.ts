@@ -1,31 +1,16 @@
 // @ts-nocheck
-import { createServer } from 'node:http';
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join, normalize } from 'node:path';
-import httpProxy from 'http-proxy';
 import mqtt from 'mqtt';
 
 const port = Number(process.env.PORT || 80);
 const staticDir = process.env.STATIC_DIR || join(process.cwd(), 'dist');
-const mqttBrokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://mqtt:1883';
-const mqttWebSocketTarget = process.env.MQTT_WS_TARGET || 'http://mqtt:9001';
-const mqttLogTopic = process.env.MQTT_LOG_TOPIC || '#';
+const mqttBrokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://127.0.0.1:1883';
+const llmServiceUrl = process.env.LLM_SERVICE_URL || 'http://127.0.0.1:8000';
+const mqttLogTopic = '#';
 const mqttShakeTopic = 'v1/shake';
-
-const contentTypes = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
+const mqttDetectionTopic = 'v1/detection';
+const sockets = new Set();
 
 function safeStaticPath(urlPath) {
   const cleanPath = decodeURIComponent(urlPath.split('?')[0] || '/');
@@ -34,20 +19,49 @@ function safeStaticPath(urlPath) {
   return join(staticDir, relative);
 }
 
-function serveStatic(req, res) {
-  const requestedPath = safeStaticPath(req.url || '/');
+function staticResponse(req) {
+  const url = new URL(req.url);
+  const requestedPath = safeStaticPath(url.pathname);
   const filePath = existsSync(requestedPath) && statSync(requestedPath).isFile()
     ? requestedPath
     : join(staticDir, 'index.html');
-  const ext = filePath.slice(filePath.lastIndexOf('.'));
-
-  res.writeHead(200, {
-    'content-type': contentTypes[ext] || 'application/octet-stream',
+  const headers = {
     'cache-control': filePath.includes('/assets/')
       ? 'public, max-age=31536000, immutable'
       : 'no-cache',
+  };
+  return new Response(Bun.file(filePath), { headers });
+}
+
+function broadcast(event) {
+  const payload = JSON.stringify(event);
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+  }
+}
+
+function parsePayload(message) {
+  try {
+    return JSON.parse(message);
+  } catch {
+    return null;
+  }
+}
+
+async function proxyPalmReading(req) {
+  const formData = await req.formData();
+  const response = await fetch(`${llmServiceUrl}/palm-reading`, {
+    method: 'POST',
+    body: formData,
   });
-  createReadStream(filePath).pipe(res);
+  const headers = new Headers(response.headers);
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function startMqttLogger() {
@@ -73,49 +87,59 @@ function startMqttLogger() {
   client.on('error', (err) => console.error(`[mqtt] error: ${err.message}`));
   client.on('message', (topic, payload) => {
     const message = payload.toString();
+    const data = parsePayload(message);
+    const event = { topic, payload: message, data, at: new Date().toISOString() };
+
     if (topic === mqttShakeTopic) {
       console.log(`[mqtt:shake] topic=${topic} payload=${message}`);
+      broadcast(event);
+      return;
+    }
+    if (topic === mqttDetectionTopic) {
+      console.log(`[mqtt:detection] seq=${data?.sequence_number ?? '-'} shaking=${data?.is_shaking ?? '-'} accel=(${data?.accel_x_g ?? '-'},${data?.accel_y_g ?? '-'},${data?.accel_z_g ?? '-'}) accel_euclidean=${data?.accel_euclidean_g ?? '-'} gyro=(${data?.gyro_x_dps ?? '-'},${data?.gyro_y_dps ?? '-'},${data?.gyro_z_dps ?? '-'}) gyro_magnitude=${data?.gyro_magnitude_dps ?? '-'}`);
+      broadcast(event);
       return;
     }
     console.log(`[mqtt] ${topic}: ${message}`);
   });
 }
 
-const proxy = httpProxy.createProxyServer({
-  target: mqttWebSocketTarget,
-  ws: true,
-  changeOrigin: true,
-});
-
-proxy.on('error', (err, _req, res) => {
-  console.error(`[proxy] ${err.message}`);
-  if (res?.writeHead) {
-    res.writeHead(502);
-    res.end('Bad gateway');
-  }
-});
-
-const server = createServer((req, res) => {
-  if (req.url?.startsWith('/mqtt')) {
-    proxy.web(req, res);
-    return;
-  }
-  serveStatic(req, res);
-});
-
-server.on('upgrade', (req, socket, head) => {
-  if (req.url?.startsWith('/mqtt')) {
-    proxy.ws(req, socket, head);
-    return;
-  }
-  socket.destroy();
-});
-
 startMqttLogger();
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`[server] listening on :${port}`);
-  console.log(`[server] static ${staticDir}`);
-  console.log(`[server] mqtt websocket proxy ${mqttWebSocketTarget}`);
-  console.log(`[server] mqtt shake logger ${mqttShakeTopic}`);
+Bun.serve({
+  port,
+  hostname: '0.0.0.0',
+  fetch(req, server) {
+    const url = new URL(req.url);
+    if (url.pathname === '/events') {
+      if (server.upgrade(req)) return;
+      return new Response('WebSocket upgrade required', { status: 426 });
+    }
+    if (url.pathname === '/api/palm-reading') {
+      if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return proxyPalmReading(req);
+    }
+    return staticResponse(req);
+  },
+  websocket: {
+    open(socket) {
+      sockets.add(socket);
+      socket.send(JSON.stringify({
+        type: 'status',
+        topic: 'backend/status',
+        payload: 'connected',
+        at: new Date().toISOString(),
+      }));
+    },
+    close(socket) {
+      sockets.delete(socket);
+    },
+    message() {},
+  },
 });
+
+console.log(`[server] listening on :${port}`);
+console.log(`[server] static ${staticDir}`);
+console.log(`[server] realtime websocket /events`);
+console.log(`[server] mqtt broker ${mqttBrokerUrl}`);
+console.log(`[server] llm service ${llmServiceUrl}`);
