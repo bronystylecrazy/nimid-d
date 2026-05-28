@@ -17,8 +17,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=80
 ENV STATIC_DIR=/app/dist
-ENV MQTT_BROKER_URL=mqtt://mqtt:1883
-ENV MQTT_WS_TARGET=http://mqtt:9001
+ENV MQTT_BROKER_URL=mqtt://127.0.0.1:1883
 
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
