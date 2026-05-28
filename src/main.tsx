@@ -4117,7 +4117,7 @@ function SentimentMetric({ label, score, moods }) {
 // result.tsx — Phase 4: Fortune stick result
 // Paper-slip oracle card with prediction, advice, reflection question, lucky #.
 
-function ResultScreen({ state, onRestart, onBack, onShop, onDonate }) {
+function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReading }) {
   const fortune = FORTUNES[state.category] || FORTUNES.work;
   const cat = CATEGORIES.find(c => c.id === state.category);
   const t = TEMPLES.find(x => x.id === state.temple);
@@ -4243,7 +4243,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate }) {
 
               {/* Actions */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
-                <button className="btn btn-primary" style={{ padding: '14px 22px', flex: '1 1 auto' }}>
+                <button className="btn btn-primary" onClick={onSaveReading} style={{ padding: '14px 22px', flex: '1 1 auto' }}>
                   <Icon.bell size={16}/> บันทึกผลเซียมซี
                 </button>
                 <button className="btn btn-secondary" onClick={onDonate} style={{ padding: '14px 22px' }}>
@@ -6079,6 +6079,54 @@ function OnePageApp() {
 }
 
 const RITUAL_STATE_KEY = 'siamsi:ritual';
+const READINGS_STATE_KEY = 'siamsi:readings';
+
+function readReadingHistory() {
+  try {
+    const raw = localStorage.getItem(READINGS_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeReadingHistory(readings) {
+  try { localStorage.setItem(READINGS_STATE_KEY, JSON.stringify(readings)); } catch {}
+}
+
+function makeReadingRecord(ritual) {
+  const fortune = FORTUNES[ritual.category] || FORTUNES.work;
+  return {
+    id: `reading_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    createdAt: new Date().toISOString(),
+    user: ritual.user || null,
+    ritual: {
+      activity: ritual.activity || null,
+      feeling: ritual.feeling || '',
+      moods: Array.isArray(ritual.moods) ? ritual.moods : [],
+      temple: ritual.temple || 'thai',
+      box: ritual.box || 'gold',
+      category: ritual.category || 'work',
+      music: ritual.music || 'bell',
+    },
+    fortune: {
+      category: ritual.category || 'work',
+      num: fortune.num,
+      title: fortune.title,
+      text: fortune.text,
+      advice: fortune.advice,
+      question: fortune.question,
+      luck: fortune.luck,
+    },
+  };
+}
+
+function saveReadingRecord(ritual) {
+  const record = makeReadingRecord(ritual);
+  writeReadingHistory([record, ...readReadingHistory()]);
+  return record;
+}
 
 function useRitualState() {
   const [ritual, setRitual] = React.useState(() => {
@@ -6127,14 +6175,328 @@ function PageFrame({ children }) {
   );
 }
 
+function DashboardScreen({ ritual, setRitual, readings, go }) {
+  const sorted = React.useMemo(() => [...readings].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), [readings]);
+  const latest = sorted[0] || null;
+  const total = sorted.length;
+  const favoriteCategory = mostFrequent(sorted.map(r => r?.ritual?.category || r?.fortune?.category).filter(Boolean)) || ritual.category || 'work';
+  const favoriteCatMeta = CATEGORIES.find(c => c.id === favoriteCategory) || CATEGORIES.find(c => c.id === 'work');
+  const luckyTemple = mostFrequent(sorted.map(r => r?.ritual?.temple).filter(Boolean)) || ritual.temple || 'thai';
+  const luckyBox = mostFrequent(sorted.map(r => r?.ritual?.box).filter(Boolean)) || ritual.box || 'gold';
+  const luckyTempleMeta = TEMPLES.find(t => t.id === luckyTemple) || TEMPLES[0];
+  const luckyBoxMeta = BOXES.find(b => b.id === luckyBox) || BOXES[0];
+  const streak = calcCurrentStreak(sorted);
+  const weekly = calcWeeklyInsights(sorted);
+  const displayRecord = latest || makeReadingRecord(ritual);
+  const displayCat = CATEGORIES.find(c => c.id === (displayRecord.ritual?.category || displayRecord.fortune?.category)) || CATEGORIES[2];
+  const displayTemple = TEMPLES.find(t => t.id === displayRecord.ritual?.temple) || TEMPLES[0];
+  const displayBox = BOXES.find(b => b.id === displayRecord.ritual?.box) || BOXES[0];
+  const DisplayIcon = Icon[displayCat.icon] || Icon.sparkle;
+
+  const startReading = (category) => {
+    setRitual((r) => ({
+      ...r,
+      category: category || r.category || 'work',
+      activity: r.activity || 'meditate',
+      temple: r.temple || 'thai',
+      box: r.box || 'gold',
+      music: r.music || 'bell',
+    }));
+    go('/setup');
+  };
+  const openLatestResult = () => {
+    if (latest?.ritual) {
+      setRitual((r) => ({ ...r, ...latest.ritual, user: latest.user || r.user }));
+    }
+    go('/result');
+  };
+
+  return (
+    <div className="proto" style={{ minHeight: '100vh', height: 'auto', overflowY: 'auto' }}>
+      <Sparkles count={12}/>
+      <div style={{ maxWidth: 1280, margin: '0 auto', padding: '92px 28px 44px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 18, marginBottom: 24 }}>
+          <div>
+            <div className="eyebrow" style={{ marginBottom: 10 }}>Personal Dashboard</div>
+            <h1 style={{ fontSize: 40, lineHeight: 1.12 }}>ภาพรวมพิธีเซียมซีของคุณ</h1>
+          </div>
+          <button className="btn btn-primary" onClick={() => startReading()} style={{ padding: '13px 20px' }}>
+            เริ่มอ่านใหม่ <Icon.arrowR size={16}/>
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 16, marginBottom: 20 }}>
+          <DashboardMetric icon={Icon.sparkle} label="Total Readings" value={total} tone="var(--c-peach)"/>
+          <DashboardMetric icon={Icon[favoriteCatMeta.icon]} label="Favorite Feature" value={favoriteCatMeta.name} tone="var(--c-lavender)"/>
+          <DashboardMetric icon={Icon.lotus} label="Lucky Element" value={luckyTempleMeta.name} tone="var(--c-gold)"/>
+          <DashboardMetric icon={Icon.bell} label="Current Streak" value={`${streak} วัน`} tone="var(--c-mint)"/>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 20, marginBottom: 20 }}>
+          <section className="card" style={{ padding: 24, minHeight: 270 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+              <h2 style={{ fontSize: 20 }}>Latest Fortune Result</h2>
+              <span className="badge">{latest ? displayCat.name : 'เริ่มต้น'}</span>
+            </div>
+            {latest ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 22, alignItems: 'center' }}>
+                <div style={{
+                  width: 96, height: 96, borderRadius: 24,
+                  background: `linear-gradient(145deg, ${displayTemple.swatch[1]}, ${displayTemple.swatch[0]})`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'var(--text-main)',
+                }}>
+                  <DisplayIcon size={42}/>
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: 26, lineHeight: 1.2, marginBottom: 8 }}>
+                    {displayRecord.fortune.title}
+                  </h3>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+                    <span className="badge">เลข {displayRecord.fortune.num}</span>
+                    <span className="badge">{displayTemple.name}</span>
+                    <span className="badge">{displayBox.name}</span>
+                  </div>
+                  <div style={{
+                    border: '1px solid var(--border-medium)', borderRadius: 16,
+                    background: 'var(--surface-soft)', padding: '11px 14px',
+                    fontFamily: 'var(--font-display)', fontSize: 15, lineHeight: 1.45,
+                  }}>
+                    “{displayRecord.fortune.advice}”
+                  </div>
+                </div>
+                <button className="btn btn-secondary" onClick={openLatestResult}
+                  style={{ gridColumn: '1 / -1', marginTop: 14, padding: '13px 18px', justifyContent: 'center' }}>
+                  ดูผลเต็ม <Icon.arrowR size={16}/>
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 22, alignItems: 'center' }}>
+                <div style={{
+                  width: 96, height: 96, borderRadius: 24, background: 'var(--surface-soft)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Icon.lotus size={42} color="var(--c-peach-deep)"/>
+                </div>
+                <div>
+                  <h3 style={{ fontSize: 26, marginBottom: 8 }}>ยังไม่มีผลเซียมซีที่บันทึกไว้</h3>
+                  <p style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    เริ่มพิธีครั้งแรก แล้วบันทึกผลเพื่อให้ dashboard นี้สะท้อนข้อมูลจริงของคุณ
+                  </p>
+                </div>
+                <button className="btn btn-primary" onClick={() => startReading()}
+                  style={{ gridColumn: '1 / -1', marginTop: 14, padding: '13px 18px' }}>
+                  เริ่มอ่านเซียมซี <Icon.arrowR size={16}/>
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="card" style={{ padding: 24 }}>
+            <h2 style={{ fontSize: 20, marginBottom: 18 }}>Start a Reading</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <DashboardStartCard icon={Icon.pencil} title="Name & Birth Reading" desc="ใช้ข้อมูลโปรไฟล์เดิม" onClick={() => startReading('work')}/>
+              <DashboardStartCard icon={Icon.lotus} title="Palm Reading" desc="ต่อจากลายมือที่บันทึกไว้" onClick={() => startReading('health')}/>
+              <DashboardStartCard icon={Icon.sparkle} title="Fortune Sticks" desc="เสี่ยงเซียมซีครั้งใหม่" onClick={() => startReading(favoriteCategory)}/>
+            </div>
+          </section>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: 20 }}>
+          <section className="card" style={{ padding: 24 }}>
+            <h2 style={{ fontSize: 20, marginBottom: 18 }}>Weekly Insights</h2>
+            <DashboardBar label="Clarity" value={weekly.clarity} color="var(--c-peach)"/>
+            <DashboardBar label="Energy" value={weekly.energy} color="var(--c-lavender)"/>
+            <DashboardBar label="Luck" value={weekly.luck} color="var(--c-gold)"/>
+          </section>
+
+          <section className="card" style={{ padding: 24 }}>
+            <h2 style={{ fontSize: 20, marginBottom: 18 }}>Recent Activity</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {sorted.slice(0, 4).map((r, i) => {
+                const cat = CATEGORIES.find(c => c.id === (r.ritual?.category || r.fortune?.category)) || CATEGORIES[2];
+                return <DashboardActivity key={r.id || i} record={r} cat={cat} index={i}/>;
+              })}
+              {!sorted.length && (
+                <p style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  ยังไม่มีกิจกรรมล่าสุด หลังบันทึกผลเซียมซี รายการจะมาแสดงที่นี่
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="card" style={{ padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <h2 style={{ fontSize: 20 }}>Fortune Sticks</h2>
+              <button className="btn btn-tertiary" onClick={() => startReading()} style={{ padding: '8px 10px', fontSize: 12 }}>View All</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              {CATEGORIES.map((c, i) => {
+                const f = FORTUNES[c.id];
+                const active = c.id === favoriteCategory;
+                const unlocked = sorted.some(r => (r.ritual?.category || r.fortune?.category) === c.id);
+                return (
+                  <button key={c.id} onClick={() => startReading(c.id)} style={{
+                    minHeight: 118, border: '1px solid var(--border-soft)',
+                    borderRadius: 18, padding: 14, textAlign: 'left', cursor: 'pointer',
+                    background: active ? 'var(--c-gold)' : unlocked ? 'var(--surface-soft)' : 'transparent',
+                    color: 'var(--text-main)', boxShadow: active ? 'var(--shadow-soft)' : 'none',
+                    borderStyle: unlocked || active ? 'solid' : 'dashed',
+                  }}>
+                    <span className="badge" style={{ marginBottom: 28 }}>{f.num}</span>
+                    <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 3 }}>{c.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                      {active ? 'current' : unlocked ? 'unlocked' : 'locked'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardMetric({ icon: IconCmp, label, value, tone }) {
+  return (
+    <div className="card" style={{ padding: 20, minHeight: 118 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <span style={{
+          width: 38, height: 38, borderRadius: 12, background: tone,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <IconCmp size={18}/>
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+      </div>
+      <div style={{ fontFamily: 'var(--font-display)', fontSize: 25, fontWeight: 600, lineHeight: 1.15 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function DashboardStartCard({ icon: IconCmp, title, desc, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      display: 'grid', gridTemplateColumns: '42px 1fr', gap: 12, alignItems: 'center',
+      padding: 14, borderRadius: 16, border: '1px solid var(--border-medium)',
+      background: 'var(--surface-soft)', textAlign: 'left', color: 'var(--text-main)',
+      cursor: 'pointer',
+    }}>
+      <span style={{
+        width: 38, height: 38, borderRadius: 12, background: 'var(--surface-card)',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: 'var(--shadow-soft)',
+      }}>
+        <IconCmp size={18}/>
+      </span>
+      <span>
+        <span style={{ display: 'block', fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>{desc}</span>
+      </span>
+    </button>
+  );
+}
+
+function DashboardBar({ label, value, color }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        <span style={{ color: 'var(--text-muted)' }}>{value}%</span>
+      </div>
+      <div style={{ height: 9, borderRadius: 999, background: 'var(--surface-soft)', overflow: 'hidden', border: '1px solid var(--border-soft)' }}>
+        <div style={{ height: '100%', width: `${value}%`, borderRadius: 999, background: color }}/>
+      </div>
+    </div>
+  );
+}
+
+function DashboardActivity({ record, cat, index }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '18px 1fr', gap: 12, alignItems: 'stretch' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <span style={{
+          width: 14, height: 14, borderRadius: '50%',
+          background: index === 0 ? 'var(--c-gold)' : index === 1 ? 'var(--c-lavender)' : 'var(--surface-soft)',
+          border: '1px solid var(--border-medium)',
+        }}/>
+        <span style={{ flex: 1, width: 1, background: 'var(--border-soft)', marginTop: 4 }}/>
+      </div>
+      <div style={{ border: '1px solid var(--border-medium)', borderRadius: 14, padding: '10px 12px', background: 'rgba(255,255,255,.55)' }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>{formatRelativeDay(record.createdAt)}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.35 }}>
+          {cat.name} · เลข {record.fortune?.num} {record.fortune?.title}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function mostFrequent(items) {
+  const counts = new Map();
+  items.forEach((item) => counts.set(item, (counts.get(item) || 0) + 1));
+  let best = null;
+  let bestCount = 0;
+  counts.forEach((count, item) => {
+    if (count > bestCount) { best = item; bestCount = count; }
+  });
+  return best;
+}
+
+function calcCurrentStreak(readings) {
+  const days = new Set(readings.map(r => new Date(r.createdAt).toISOString().slice(0, 10)));
+  let streak = 0;
+  const d = new Date();
+  while (days.has(d.toISOString().slice(0, 10))) {
+    streak += 1;
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
+}
+
+function calcWeeklyInsights(readings) {
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const week = readings.filter(r => new Date(r.createdAt).getTime() >= weekAgo);
+  const moods = week.flatMap(r => r.ritual?.moods || []);
+  const clarityHits = moods.filter(m => ['สงบ', 'มีหวัง', 'อยากได้คำแนะนำ'].includes(m)).length;
+  const energyHits = moods.filter(m => ['เหนื่อย', 'กังวล', 'สับสน'].includes(m)).length;
+  const base = Math.min(100, week.length * 18);
+  return {
+    clarity: Math.max(20, Math.min(96, base + clarityHits * 12)),
+    energy: Math.max(20, Math.min(92, 74 - energyHits * 8 + week.length * 6)),
+    luck: Math.max(20, Math.min(99, base + new Set(week.map(r => r.ritual?.category)).size * 10)),
+  };
+}
+
+function formatRelativeDay(iso) {
+  const now = new Date();
+  const d = new Date(iso);
+  const startNow = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((startNow - startDay) / (24 * 60 * 60 * 1000));
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return `${diff} days ago`;
+}
+
 function RitualPages() {
   const navigate = useNavigate();
   const location = useLocation();
   const [ritual, setRitual] = useRitualState();
+  const [readings, setReadings] = React.useState(() => readReadingHistory());
   const [t, setTweak] = useSharedTweaks();
   const showPageTweaks = !['/journey', '/canvas'].includes(location.pathname);
 
   const go = (path) => navigate(path);
+  const saveAndOpenDashboard = () => {
+    saveReadingRecord(ritual);
+    setReadings(readReadingHistory());
+    go('/dashboard');
+  };
   const restart = () => {
     setRitual((r) => ({ ...DEFAULT_RITUAL, user: r.user }));
     go('/setup');
@@ -6169,8 +6531,12 @@ function RitualPages() {
         <Route path="/result" element={
           <PageFrame>
             <ResultScreen state={ritual} onRestart={restart} onBack={() => go('/shake')}
-              onShop={() => go('/shop')} onDonate={() => go('/donate')}/>
+              onShop={() => go('/shop')} onDonate={() => go('/donate')}
+              onSaveReading={saveAndOpenDashboard}/>
           </PageFrame>
+        }/>
+        <Route path="/dashboard" element={
+          <DashboardScreen ritual={ritual} setRitual={setRitual} readings={readings} go={go}/>
         }/>
         <Route path="/shop" element={
           <PageFrame>
@@ -6235,7 +6601,7 @@ function RitualPages() {
 function AppNav() {
   const location = useLocation();
   const current = location.pathname;
-  const pageRoutes = ['/login', '/setup', '/meditation', '/shake', '/result', '/shop', '/donate'];
+  const pageRoutes = ['/dashboard', '/login', '/setup', '/meditation', '/shake', '/result', '/shop', '/donate'];
   return (
     <nav style={{
       position: 'fixed', top: 16, right: 16, zIndex: 1000,
