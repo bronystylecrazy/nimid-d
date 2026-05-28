@@ -40,16 +40,16 @@ Sentiment example:
 curl -X POST http://127.0.0.1:8000/sentiment \
   -H "content-type: application/json" \
   -d '{
-    "pre_feeling": "วันนี้รู้สึกกังวลเรื่องงาน",
-    "pre_moods": ["กังวล"],
-    "post_feeling": "รู้สึกโล่งใจขึ้นและได้คำตอบ",
-    "post_moods": ["โล่งใจ", "ได้รับคำตอบ"]
+    "text": "ขอให้ปีนี้มีเงินใช้พอ ไม่ลำบากเหมือนที่ผ่านมา"
   }'
 ```
+
+The response includes `feeling_now`, `wellbeing_now`, `score`, and `reason_th` on the 1-10 wish sentiment scale.
 
 ## Environment
 
 - `OPENAI_API_KEY`: required for live OpenAI calls.
-- `OPENAI_MODEL`: optional, defaults to the model from the copied OCR flow.
+- `OPENAI_MODEL`: optional, defaults palm reading to the model from the copied OCR flow.
+- `OPENAI_SENTIMENT_MODEL`: optional, defaults sentiment analysis to `gpt-5-mini`.
 - `HTTP_PORT`: optional, defaults to `8000`.
 - `LLM_OUTPUT_DIR`: optional, defaults to `/app/output` in Docker.

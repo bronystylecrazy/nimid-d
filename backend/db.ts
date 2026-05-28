@@ -108,6 +108,7 @@ function ritualFromRow(row, user) {
 }
 
 function readingFromRow(row) {
+  const luck = parseJson(row.fortune_luck, null);
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -128,7 +129,15 @@ function readingFromRow(row) {
       text: row.fortune_text,
       advice: row.fortune_advice,
       question: row.fortune_question,
-      luck: row.fortune_luck,
+      luck: Array.isArray(luck) ? luck : (row.fortune_luck ? [row.fortune_luck] : []),
+    },
+    sentiment: row.sentiment_score == null ? null : {
+      feeling_now: row.sentiment_feeling_now,
+      wellbeing_now: row.sentiment_wellbeing_now,
+      score: row.sentiment_score,
+      reason_th: row.sentiment_reason_th || '',
+      model: row.sentiment_model || '',
+      status: row.sentiment_status || '',
     },
   };
 }
@@ -266,8 +275,11 @@ export function openAppDb(options = {}) {
       INSERT INTO fortune_readings (
         id, user_id, user_snapshot_json, activity, feeling, moods_json, temple, box, category, music,
         fortune_num, fortune_title, fortune_text, fortune_advice, fortune_question, fortune_luck,
-        pre_score, post_score, post_moods_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pre_score, post_score, post_moods_json,
+        sentiment_feeling_now, sentiment_wellbeing_now, sentiment_score,
+        sentiment_reason_th, sentiment_model, sentiment_status,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
   };
 
@@ -392,6 +404,7 @@ export function openAppDb(options = {}) {
     if (!session) return null;
     const ritual = record.ritual || {};
     const fortune = record.fortune || {};
+    const sentiment = record.sentiment || {};
     const id = record.id || randomId('reading');
     statements.insertReading.run(
       id,
@@ -409,10 +422,16 @@ export function openAppDb(options = {}) {
       String(fortune.text || ''),
       fortune.advice || null,
       fortune.question || null,
-      fortune.luck || null,
+      jsonString(fortune.luck, []),
       record.preScore ?? null,
       record.postScore ?? null,
       jsonString(record.postMoods, null),
+      sentiment.feeling_now ?? null,
+      sentiment.wellbeing_now ?? null,
+      sentiment.score ?? null,
+      sentiment.reason_th || null,
+      sentiment.model || null,
+      sentiment.status || null,
       record.createdAt || nowIso(),
     );
     return readingFromRow(db.query('SELECT * FROM fortune_readings WHERE id = ?').get(id));

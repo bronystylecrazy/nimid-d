@@ -135,11 +135,31 @@ async function dataUrlToBlob(dataUrl) {
   return response.blob();
 }
 
-async function requestPalmReading(palmDataUrl) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+function decodeImage(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => resolve();
+    img.src = src;
+    if (img.decode) img.decode().then(resolve).catch(resolve);
+  });
+}
+
+async function postPalmReading(palmDataUrl, { dryRun = false } = {}) {
   const blob = await dataUrlToBlob(palmDataUrl);
   const formData = new FormData();
   formData.append('image', blob, 'palm.jpg');
-  formData.append('dry_run', 'false');
+  formData.append('dry_run', dryRun ? 'true' : 'false');
   const response = await fetch('/api/palm-reading', {
     method: 'POST',
     body: formData,
@@ -149,6 +169,24 @@ async function requestPalmReading(palmDataUrl) {
     throw new Error(payload?.detail || payload?.message || 'อ่านลายมือไม่สำเร็จ');
   }
   return payload;
+}
+
+async function requestPalmReading(palmDataUrl, { onPanel } = {}) {
+  let preview = null;
+  try {
+    preview = await postPalmReading(palmDataUrl, { dryRun: true });
+    if (preview?.llm_panel_png_base64) {
+      await onPanel?.(`data:image/png;base64,${preview.llm_panel_png_base64}`, preview);
+    }
+  } catch (error) {
+    console.warn('palm preprocessing preview failed', error);
+  }
+
+  const result = await postPalmReading(palmDataUrl, { dryRun: false });
+  if (!result.llm_panel_png_base64 && preview?.llm_panel_png_base64) {
+    result.llm_panel_png_base64 = preview.llm_panel_png_base64;
+  }
+  return result;
 }
 
 function LoginScreen({ onContinue, initial = {} }) {
@@ -204,26 +242,45 @@ function RegisterForm({ onContinue, initial = {} }) {
   const [palm, setPalm] = React.useState(initial.palm || null); // dataURL
   const [readingStatus, setReadingStatus] = React.useState('idle');
   const [readingError, setReadingError] = React.useState('');
+  const [palmProcessingPanel, setPalmProcessingPanel] = React.useState(null);
   const ready = name.trim().length >= 2 && palm;
   const analyzing = readingStatus === 'loading';
+
+  const updatePalm = (nextPalm) => {
+    setPalm(nextPalm);
+    setPalmProcessingPanel(null);
+    setReadingStatus('idle');
+    setReadingError('');
+  };
 
   const continueWithPalmReading = async () => {
     if (!ready || analyzing) return;
     const user = { name: name.trim(), palm };
     setReadingStatus('loading');
     setReadingError('');
+    setPalmProcessingPanel(null);
     try {
-      const result = await requestPalmReading(palm);
+      const result = await requestPalmReading(palm, {
+        onPanel: async (panelUrl) => {
+          setPalmProcessingPanel(panelUrl);
+          await decodeImage(panelUrl);
+          await waitForPaint();
+          await sleep(900);
+        },
+      });
+      const panelUrl = result.llm_panel_png_base64
+        ? `data:image/png;base64,${result.llm_panel_png_base64}`
+        : null;
+      setPalmProcessingPanel(panelUrl);
       const nextUser = {
         ...user,
         palmReading: result.reading,
         palmReadingStatus: result.status,
         palmReadingManifest: result.manifest,
-        palmReadingPanel: result.llm_panel_png_base64
-          ? `data:image/png;base64,${result.llm_panel_png_base64}`
-          : null,
+        palmReadingPanel: panelUrl,
       };
       setReadingStatus(result.status === 'complete' ? 'complete' : 'fallback');
+      if (panelUrl) await sleep(1200);
       onContinue(nextUser);
     } catch (error) {
       setReadingStatus('error');
@@ -323,8 +380,15 @@ function RegisterForm({ onContinue, initial = {} }) {
 
             {/* Palm capture */}
             <Field label="ลายมือของคุณ" hint="วางฝ่ามือไว้ในกรอบ แล้วกดถ่ายภาพ">
-              <PalmCapture value={palm} onChange={setPalm}/>
+              <PalmCapture value={palm} onChange={updatePalm} disabled={analyzing}/>
             </Field>
+
+            {(palm && (analyzing || palmProcessingPanel)) && (
+              <PalmProcessingPreview
+                palm={palm}
+                panel={palmProcessingPanel}
+                status={readingStatus}/>
+            )}
 
             <button className="btn btn-primary" disabled={!ready || analyzing}
               onClick={continueWithPalmReading}
@@ -375,10 +439,158 @@ function Field({ label, hint, children }) {
   );
 }
 
+function PalmProcessingPreview({ palm, panel, status }) {
+  const done = Boolean(panel);
+  const statusText = done
+    ? (status === 'complete' ? 'ประมวลผลและอ่านลายมือสำเร็จ' : 'ประมวลผลภาพสำเร็จ กำลังรอคำอ่านจาก LLM')
+    : 'กำลังแยกเส้นลายมือด้วย OpenCV';
+  return (
+    <div style={{
+      border: '1px solid var(--border-soft)',
+      borderRadius: 22,
+      background: 'linear-gradient(180deg, rgba(255,255,255,.72), rgba(252,238,227,.78))',
+      padding: 14,
+      marginTop: -2,
+      animation: 'float-up .28s ease both',
+      overflow: 'hidden',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <div>
+          <div className="eyebrow" style={{ marginBottom: 3 }}>OpenCV Processing</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{statusText}</div>
+        </div>
+        <span className="badge" style={{ flexShrink: 0 }}>
+          {done ? <Icon.check size={12} sw={2.5}/> : <span style={{
+            width: 12, height: 12, borderRadius: '50%',
+            border: '2px solid rgba(61,46,42,.18)', borderTopColor: 'var(--text-main)',
+            animation: 'spin-mini .8s linear infinite',
+          }}/>}
+          {done ? 'เห็นเส้นแล้ว' : 'กำลังสแกน'}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, .8fr) minmax(0, 1.2fr)', gap: 12 }}>
+        <ProcessingFrame label="ภาพต้นฉบับ" active={!done}>
+          <img src={palm} alt="palm input" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+          {!done && <ScanOverlay/>}
+        </ProcessingFrame>
+
+        <ProcessingFrame label="OpenCV panel" active={!done}>
+          {panel ? (
+            <img src={panel} alt="opencv palm processing panel" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#121212' }}/>
+          ) : (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'grid', gridTemplateRows: '1fr 1fr', gap: 8,
+              padding: 12, background: '#151313',
+            }}>
+              <ProcessingSkeleton title="palm crop"/>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                <ProcessingSkeleton title="contrast" small/>
+                <ProcessingSkeleton title="lines" small/>
+                <ProcessingSkeleton title="mask" small/>
+              </div>
+            </div>
+          )}
+        </ProcessingFrame>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        {['crop', 'contrast', 'line response', 'mask'].map((step, index) => (
+          <div key={step} style={{
+            flex: 1,
+            height: 5,
+            borderRadius: 999,
+            background: done
+              ? 'var(--c-mint-deep)'
+              : 'linear-gradient(90deg, var(--c-peach), var(--c-lavender), var(--c-mint))',
+            backgroundSize: '200% 100%',
+            animation: done ? 'none' : `shimmer 1.2s linear ${index * 0.12}s infinite`,
+            opacity: done ? 0.75 : 1,
+          }}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProcessingFrame({ label, active, children }) {
+  return (
+    <div style={{
+      position: 'relative',
+      minHeight: 156,
+      aspectRatio: '4 / 3',
+      overflow: 'hidden',
+      borderRadius: 16,
+      background: 'rgba(61,46,42,.08)',
+      boxShadow: active ? 'var(--shadow-glow)' : 'inset 0 0 0 1px var(--border-soft)',
+    }}>
+      {children}
+      <div style={{
+        position: 'absolute', left: 10, top: 10,
+        padding: '4px 8px',
+        borderRadius: 999,
+        background: 'rgba(255,255,255,.88)',
+        color: 'var(--text-main)',
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '.08em',
+      }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function ScanOverlay() {
+  return (
+    <>
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: 'linear-gradient(180deg, transparent, rgba(184,216,200,.18), transparent)',
+        animation: 'scan-y 1.25s ease-in-out infinite',
+        mixBlendMode: 'screen',
+      }}/>
+      <div style={{
+        position: 'absolute', inset: 0,
+        backgroundImage: 'linear-gradient(rgba(255,255,255,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px)',
+        backgroundSize: '18px 18px',
+        opacity: .35,
+      }}/>
+    </>
+  );
+}
+
+function ProcessingSkeleton({ title, small = false }) {
+  return (
+    <div style={{
+      position: 'relative',
+      borderRadius: 12,
+      overflow: 'hidden',
+      background: 'linear-gradient(110deg, rgba(255,255,255,.08), rgba(255,255,255,.22), rgba(255,255,255,.08))',
+      backgroundSize: '220% 100%',
+      animation: 'shimmer 1.1s linear infinite',
+      minHeight: small ? 44 : 70,
+    }}>
+      <span style={{
+        position: 'absolute', left: 9, top: 8,
+        color: 'rgba(255,255,255,.74)',
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '.08em',
+      }}>
+        {title}
+      </span>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────
 // PalmCapture — live camera preview with palm guide overlay + capture
 // ─────────────────────────────────────────────
-function PalmCapture({ value, onChange }) {
+function PalmCapture({ value, onChange, disabled = false }) {
   const videoRef = React.useRef(null);
   const canvasRef = React.useRef(null);
   const streamRef = React.useRef(null);
@@ -386,6 +598,7 @@ function PalmCapture({ value, onChange }) {
   const [error, setError] = React.useState('');
 
   const start = React.useCallback(async () => {
+    if (disabled) return;
     setStatus('starting'); setError('');
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -407,7 +620,7 @@ function PalmCapture({ value, onChange }) {
       setError(e.message || 'ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการใช้กล้องในเบราว์เซอร์');
       setStatus('error');
     }
-  }, []);
+  }, [disabled]);
 
   const stop = React.useCallback(() => {
     if (streamRef.current) {
@@ -420,6 +633,7 @@ function PalmCapture({ value, onChange }) {
   React.useEffect(() => () => stop(), [stop]);
 
   const capture = () => {
+    if (disabled) return;
     const v = videoRef.current;
     if (!v || v.readyState < 2) return;
     const w = v.videoWidth || 480, h = v.videoHeight || 480;
@@ -438,12 +652,14 @@ function PalmCapture({ value, onChange }) {
   };
 
   const retake = () => {
+    if (disabled) return;
     onChange(null);
     start();
   };
 
   // upload fallback
   const onFile = (e) => {
+    if (disabled) return;
     const f = e.target.files?.[0];
     if (!f) return;
     const r = new FileReader();
@@ -475,13 +691,13 @@ function PalmCapture({ value, onChange }) {
             กางมือออก ให้แสงสว่างพอ และวางฝ่ามือให้อยู่ในกรอบ
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button type="button" onClick={start} className="btn btn-primary"
+            <button type="button" onClick={start} className="btn btn-primary" disabled={disabled}
               style={{ padding: '10px 18px', fontSize: 13 }}>
               {status === 'starting' ? 'กำลังเปิดกล้อง...' : 'เปิดกล้อง'}
             </button>
-            <label className="btn btn-secondary" style={{ padding: '10px 16px', fontSize: 13, cursor: 'pointer' }}>
+            <label className="btn btn-secondary" style={{ padding: '10px 16px', fontSize: 13, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? .6 : 1 }}>
               อัปโหลดภาพ
-              <input type="file" accept="image/*" onChange={onFile} style={{ display: 'none' }}/>
+              <input type="file" accept="image/*" onChange={onFile} disabled={disabled} style={{ display: 'none' }}/>
             </label>
           </div>
           {error && (
@@ -552,14 +768,14 @@ function PalmCapture({ value, onChange }) {
           }}>
             <Icon.check size={12} sw={2.4}/> ภาพถูกบันทึก
           </div>
-          <button type="button" onClick={retake}
+          <button type="button" onClick={retake} disabled={disabled}
             style={{
               position: 'absolute', bottom: 10, right: 10,
               padding: '8px 14px', borderRadius: 999,
               background: 'var(--text-main)', color: 'var(--text-on-dark)',
-              border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500,
+              border: 'none', cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 500,
               display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontFamily: 'inherit',
+              fontFamily: 'inherit', opacity: disabled ? .62 : 1,
             }}>
             <Icon.refresh size={12} sw={2}/> ถ่ายใหม่
           </button>
@@ -2878,69 +3094,52 @@ function initShakeScene(container, opts) {
 
 
 
-const PRE_MOOD_SCORES = {
-  'สงบ': 72,
-  'กังวล': 32,
-  'เหนื่อย': 28,
-  'มีหวัง': 68,
-  'สับสน': 36,
-  'อยากได้คำแนะนำ': 48,
-};
-
-const POST_MOODS = ['โล่งใจ', 'สงบขึ้น', 'มีหวัง', 'ยังครุ่นคิด', 'ได้รับคำตอบ', 'อยากเริ่มใหม่'];
-
-const POST_MOOD_SCORES = {
-  'โล่งใจ': 76,
-  'สงบขึ้น': 82,
-  'มีหวัง': 78,
-  'ยังครุ่นคิด': 52,
-  'ได้รับคำตอบ': 74,
-  'อยากเริ่มใหม่': 66,
-};
-
-function scoreMoods(moods, scores) {
-  if (!moods || moods.length === 0) return 50;
-  const total = moods.reduce((sum, mood) => sum + (scores[mood] ?? 50), 0);
-  return Math.round(total / moods.length);
-}
-
-function SentimentEvaluation({ preMoods, postMoods, preScore, postScore, delta, summary, status, error }) {
-  const trend = delta > 4 ? 'ดีขึ้น' : delta < -4 ? 'ต้องดูแลต่อ' : 'ทรงตัว';
-  const color = delta > 4 ? 'var(--c-mint-deep)' : delta < -4 ? 'var(--c-coral)' : 'var(--c-gold)';
+function SentimentEvaluation({ sentiment, status, error }) {
+  const score = sentiment?.score ?? null;
+  const scoreLabel = score == null ? 'รอข้อมูล' : score >= 8 ? 'มั่นคงดี' : score >= 5 ? 'กลาง ๆ มีเรื่องให้ดูแล' : 'ต้องประคองใจ';
+  const color = score == null ? 'var(--c-gold)' : score >= 8 ? 'var(--c-mint-deep)' : score >= 5 ? 'var(--c-gold)' : 'var(--c-coral)';
+  const percent = score == null ? 0 : Math.max(0, Math.min(100, score * 10));
   return (
     <div className="card card-soft" style={{ padding: 26 }}>
       <div className="eyebrow" style={{ marginBottom: 10 }}>วิเคราะห์อารมณ์</div>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
-        <h3 style={{ fontSize: 22, fontWeight: 500 }}>แนวโน้มหลังพิธี</h3>
-        <span style={{ color, fontWeight: 600 }}>{trend}</span>
+        <h3 style={{ fontSize: 22, fontWeight: 500 }}>สภาวะปัจจุบัน</h3>
+        <span style={{ color, fontWeight: 600 }}>{scoreLabel}</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
-        <SentimentMetric label="ก่อนพิธี" score={preScore} moods={preMoods}/>
-        <SentimentMetric label="หลังพิธี" score={postScore} moods={postMoods}/>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14, marginBottom: 18 }}>
+        <SentimentMetric label="อารมณ์" score={sentiment?.feeling_now}/>
+        <SentimentMetric label="ชีวิตตอนนี้" score={sentiment?.wellbeing_now}/>
+        <SentimentMetric label="คะแนนรวม" score={sentiment?.score} highlight/>
       </div>
       <div style={{ height: 10, borderRadius: 999, background: 'rgba(61,46,42,.08)', overflow: 'hidden' }}>
-        <div style={{ width: `${Math.max(0, Math.min(100, postScore))}%`, height: '100%', borderRadius: 999, background: `linear-gradient(90deg, var(--c-peach), ${color})`, transition: 'width .25s ease' }}/>
+        <div style={{ width: `${percent}%`, height: '100%', borderRadius: 999, background: `linear-gradient(90deg, var(--c-peach), ${color})`, transition: 'width .25s ease' }}/>
       </div>
-      {(summary || status === 'loading' || error) && (
+      {(sentiment?.reason_th || status === 'loading' || error) && (
         <p style={{ fontSize: 13, color: error ? 'var(--c-coral)' : 'var(--text-main)', lineHeight: 1.55, marginTop: 14 }}>
-          {error || (status === 'loading' ? 'กำลังวิเคราะห์ด้วย LLM...' : summary)}
+          {error || (status === 'loading' ? 'กำลังวิเคราะห์ด้วย LLM...' : sentiment.reason_th)}
         </p>
       )}
       <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55, marginTop: 14 }}>
-        คะแนนนี้วิเคราะห์จากข้อความและ mood chips ก่อน/หลังพิธี ไม่ใช่การวินิจฉัยทางการแพทย์
+        คะแนนนี้วิเคราะห์จากข้อความอธิษฐานบนสเกล 1-10 ไม่ใช่การวินิจฉัยทางการแพทย์
       </p>
     </div>
   );
 }
 
-function SentimentMetric({ label, score, moods }) {
+function SentimentMetric({ label, score, highlight = false }) {
   return (
     <div style={{ border: '1px solid var(--border-soft)', borderRadius: 18, padding: 16, background: 'rgba(255,255,255,.45)' }}>
       <div className="eyebrow" style={{ marginBottom: 6 }}>{label}</div>
-      <div style={{ fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 500, marginBottom: 8 }}>{score}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {(moods && moods.length ? moods : ['ยังไม่เลือก']).slice(0, 3).map((m) => <span key={m} className="badge">{m}</span>)}
+      <div style={{
+        fontFamily: 'var(--font-display)',
+        fontSize: highlight ? 38 : 34,
+        fontWeight: 500,
+        color: highlight ? 'var(--c-coral)' : 'var(--text-main)',
+        marginBottom: 8,
+      }}>
+        {score ?? '-'}
       </div>
+      <span className="badge">เต็ม 10</span>
     </div>
   );
 }
@@ -2953,17 +3152,14 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
   const t = TEMPLES.find(x => x.id === state.temple);
   const IconC = Icon[cat.icon];
 
-  // Post-ritual mood input (kept local to result screen)
-  const [postFeeling, setPostFeeling] = React.useState('');
-  const [postMoods, setPostMoods]     = React.useState([]);
+  const [wishText, setWishText] = React.useState(state.feeling || '');
   const [sentiment, setSentiment] = React.useState(null);
   const [sentimentStatus, setSentimentStatus] = React.useState('idle');
   const [sentimentError, setSentimentError] = React.useState('');
-  const toggleMood = (m) => setPostMoods(s => s.includes(m) ? s.filter(x => x !== m) : [...s, m]);
 
   React.useEffect(() => {
-    const hasPostInput = postFeeling.trim().length > 0 || postMoods.length > 0;
-    if (!hasPostInput) {
+    const text = wishText.trim();
+    if (!text) {
       setSentiment(null);
       setSentimentStatus('idle');
       setSentimentError('');
@@ -2973,12 +3169,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
     setSentimentStatus('loading');
     setSentimentError('');
     const timer = window.setTimeout(() => {
-      analyzeSentiment({
-        pre_feeling: state.feeling || '',
-        pre_moods: state.moods || [],
-        post_feeling: postFeeling,
-        post_moods: postMoods,
-      })
+      analyzeSentiment({ text })
         .then((result) => {
           if (cancelled) return;
           setSentiment(result);
@@ -2994,13 +3185,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [state.feeling, state.moods, postFeeling, postMoods]);
-
-  const fallbackPreScore  = scoreMoods(state.moods || [], PRE_MOOD_SCORES);
-  const fallbackPostScore = scoreMoods(postMoods, POST_MOOD_SCORES);
-  const preScore  = sentiment?.pre?.score ?? fallbackPreScore;
-  const postScore = sentiment?.post?.score ?? fallbackPostScore;
-  const delta     = sentiment?.delta ?? (postScore - preScore);
+  }, [wishText]);
 
   return (
     <AppShell step={3}>
@@ -3112,7 +3297,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
 
               {/* Actions */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
-                <button className="btn btn-primary" onClick={onSaveReading} style={{ padding: '14px 22px', flex: '1 1 auto' }}>
+                <button className="btn btn-primary" onClick={() => onSaveReading(sentiment)} style={{ padding: '14px 22px', flex: '1 1 auto' }}>
                   <Icon.bell size={16}/> บันทึกผลเซียมซี
                 </button>
                 <button className="btn btn-secondary" onClick={onDonate} style={{ padding: '14px 22px' }}>
@@ -3134,7 +3319,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
             </div>
           </div>
 
-          {/* ── Post-ritual reflection ───────────────────── */}
+          {/* ── Wish sentiment ───────────────────── */}
           <div style={{ marginTop: 44 }}>
             <div style={{
               display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
@@ -3142,16 +3327,16 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
               borderTop: '1px dashed var(--border-soft)',
             }}>
               <div>
-                <div className="eyebrow" style={{ marginBottom: 8 }}>หลังพิธี · Reflection</div>
-                <h2 style={{ fontSize: 28, lineHeight: 1.2 }}>ตอนนี้ใจของคุณเป็นอย่างไร?</h2>
+                <div className="eyebrow" style={{ marginBottom: 8 }}>ข้อความอธิษฐาน · Sentiment</div>
+                <h2 style={{ fontSize: 28, lineHeight: 1.2 }}>สภาวะใจปัจจุบันของคุณ</h2>
               </div>
               <p style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 460, lineHeight: 1.55 }}>
-                ข้อมูลจะถูกวิเคราะห์ร่วมกับข้อมูลก่อนพิธี เพื่อประเมินการเปลี่ยนแปลงของอารมณ์ ช่วยปรับประสบการณ์ให้นุ่มนวลขึ้นในอนาคต
+                ข้อความนี้ใช้วิเคราะห์อารมณ์และคุณภาพชีวิตปัจจุบัน เพื่อบันทึกภาพรวมของพิธีครั้งนี้ให้ชัดขึ้น
               </p>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-              {/* Post feeling input */}
+              {/* Wish text input */}
               <div className="card" style={{ padding: 26 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
                   <div style={{
@@ -3162,14 +3347,14 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
                     <Icon.pencil size={18}/>
                   </div>
                   <div>
-                    <div className="eyebrow" style={{ marginBottom: 2 }}>บันทึกความรู้สึก</div>
-                    <div style={{ fontSize: 16, fontWeight: 500 }}>หลังจากเสี่ยงเซียมซีแล้ว</div>
+                    <div className="eyebrow" style={{ marginBottom: 2 }}>ข้อความอธิษฐาน</div>
+                    <div style={{ fontSize: 16, fontWeight: 500 }}>ตอนนี้คุณกำลังขอหรือกังวลเรื่องอะไร?</div>
                   </div>
                 </div>
                 <textarea
-                  value={postFeeling}
-                  onChange={(e) => setPostFeeling(e.target.value)}
-                  placeholder="เช่น รู้สึกโล่งใจขึ้น ได้มุมมองใหม่ หรือยังมีเรื่องที่อยากคิดต่อ..."
+                  value={wishText}
+                  onChange={(e) => setWishText(e.target.value)}
+                  placeholder="เช่น ขอให้ปีนี้มีเงินใช้พอ ไม่ลำบากเหมือนที่ผ่านมา..."
                   style={{
                     width: '100%', minHeight: 100,
                     border: '1px solid var(--border-soft)',
@@ -3178,28 +3363,14 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
                     background: 'var(--bg-main)', fontFamily: 'inherit',
                     fontSize: 14, lineHeight: 1.6, color: 'var(--text-main)',
                   }}/>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-                  {POST_MOODS.map(m => (
-                    <span key={m}
-                      className={`chip ${postMoods.includes(m) ? 'active' : ''}`}
-                      onClick={() => toggleMood(m)}>
-                      {postMoods.includes(m) && <Icon.check size={12} sw={2.6}/>} {m}
-                    </span>
-                  ))}
-                </div>
                 <p style={{ fontSize: 11, color: 'var(--text-soft)', marginTop: 14, lineHeight: 1.5 }}>
-                  ข้อมูลนี้จะถูกบันทึกเพื่อวิเคราะห์และปรับประสบการณ์ผู้ใช้ในอนาคต
+                  หากไม่แก้ไข ระบบจะใช้ข้อความที่คุณบันทึกไว้ก่อนเริ่มพิธี
                 </p>
               </div>
 
               {/* Sentiment evaluation metric */}
               <SentimentEvaluation
-                preMoods={state.moods || []}
-                postMoods={postMoods}
-                preScore={preScore}
-                postScore={postScore}
-                delta={delta}
-                summary={sentiment?.summary_th}
+                sentiment={sentiment}
                 status={sentimentStatus}
                 error={sentimentError}/>
             </div>
@@ -4951,9 +5122,9 @@ function writeReadingHistory(readings) {
   try { localStorage.setItem(READINGS_STATE_KEY, JSON.stringify(readings)); } catch {}
 }
 
-function makeReadingRecord(ritual) {
+function makeReadingRecord(ritual, sentiment = null) {
   const fortune = FORTUNES[ritual.category] || FORTUNES.work;
-  return {
+  const record = {
     id: `reading_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     createdAt: new Date().toISOString(),
     user: ritual.user || null,
@@ -4976,10 +5147,12 @@ function makeReadingRecord(ritual) {
       luck: fortune.luck,
     },
   };
+  if (sentiment) record.sentiment = sentiment;
+  return record;
 }
 
-function saveReadingRecord(ritual) {
-  const record = makeReadingRecord(ritual);
+function saveReadingRecord(ritual, sentiment = null) {
+  const record = makeReadingRecord(ritual, sentiment);
   writeReadingHistory([record, ...readReadingHistory()]);
   return record;
 }
@@ -5057,8 +5230,8 @@ function RitualPages() {
   }, [ritual]);
 
   const go = (path) => navigate(path);
-  const saveAndOpenDashboard = async () => {
-    const record = saveReadingRecord(ritual);
+  const saveAndOpenDashboard = async (sentiment = null) => {
+    const record = saveReadingRecord(ritual, sentiment);
     setReadings(readReadingHistory());
     try {
       const saved = await saveReading(record);

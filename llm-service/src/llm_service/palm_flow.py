@@ -59,6 +59,8 @@ def run_palm_flow(
     model: str | None,
     dry_run: bool,
     keep_all_images: bool,
+    keep_payload: bool = False,
+    keep_raw_response: bool = False,
 ) -> dict[str, Any]:
     if not image_bytes:
         raise ValueError("image bytes are required")
@@ -71,8 +73,8 @@ def run_palm_flow(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.NamedTemporaryFile(prefix=f"{stem}_", suffix=suffix, delete=False) as tmp:
-      tmp.write(image_bytes)
-      input_path = Path(tmp.name)
+        tmp.write(image_bytes)
+        input_path = Path(tmp.name)
 
     try:
         image_outputs = preprocess_palm(
@@ -117,6 +119,8 @@ def run_palm_flow(
         "output_dir": str(output_dir),
         "model": resolved_model,
         "dry_run": dry_run,
+        "keep_payload": keep_payload,
+        "keep_raw_response": keep_raw_response,
         "image_outputs": {name: str(path) for name, path in image_outputs.items()},
         "request_payload": str(payload_path),
     }
@@ -133,6 +137,8 @@ def run_palm_flow(
         else:
             try:
                 response = post_response(payload, api_key)
+                if keep_raw_response:
+                    write_json(output_dir / "openai_raw_response.json", response)
                 output_text = extract_output_text(response)
                 reading = json.loads(output_text)
                 status = "complete"
@@ -145,6 +151,11 @@ def run_palm_flow(
     manifest["status"] = status
     manifest["message"] = message
     manifest["llm_output"] = str(output_dir / "palm_reading_response.json") if reading is not None else None
+    if keep_raw_response and (output_dir / "openai_raw_response.json").exists():
+        manifest["raw_response"] = str(output_dir / "openai_raw_response.json")
+    if reading is not None and not keep_payload and payload_path.exists():
+        payload_path.unlink()
+        manifest["request_payload"] = None
     write_json(output_dir / "manifest.json", manifest)
 
     return {

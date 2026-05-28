@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .call_gpt_palm_reader import (
-    DEFAULT_MODEL,
     extract_output_text,
     is_missing_or_mock_api_key,
     load_env_file,
@@ -14,95 +13,61 @@ from .call_gpt_palm_reader import (
 )
 
 
+DEFAULT_SENTIMENT_MODEL = "gpt-5-mini"
+
 SYSTEM_PROMPT = """
-คุณคือระบบวิเคราะห์ sentiment ภาษาไทยสำหรับพิธีเสี่ยงเซียมซีในแอป Nimidd
-ให้วิเคราะห์ "ความรู้สึกก่อนพิธี" และ "ความรู้สึกหลังพิธี" จากข้อความภาษาไทยและ mood chips ที่ผู้ใช้เลือก
+คุณคือผู้ประเมินอารมณ์และคุณภาพชีวิตปัจจุบันจากข้อความอธิษฐานภาษาไทย
+ให้ประเมิน "สภาพปัจจุบัน" ไม่ใช่ "ความหวังในอนาคต" เพียงอย่างเดียว
 
-คำถามก่อนพิธี:
-"ก่อนเริ่มพิธี ตอนนี้คุณรู้สึกอย่างไร?"
+วิเคราะห์ 2 แกน:
+1) feeling_now (1-10): สภาพอารมณ์ของผู้เขียนในปัจจุบัน
+2) wellbeing_now (1-10): สภาพความเป็นอยู่ของผู้เขียนในปัจจุบัน
 
-คำถามหลังพิธี:
-"หลังจากเสี่ยงเซียมซีแล้ว"
+เกณฑ์ feeling_now:
+- 1-3: ทุกข์หนัก วิตกสูง หมดแรงใจ/กลัวชัดเจน
+- 4-6: มีความกังวล กดดัน หรืออารมณ์ปนกัน
+- 7-8: โดยรวมสงบ/มีหวัง มีปัญหาแต่รับมือได้
+- 9-10: มั่นคงทางอารมณ์อย่างชัดเจน
 
-หลักการประเมิน:
-- score อยู่ระหว่าง 0-100 โดย 0 คือทุกข์/กังวลสูงมาก, 50 คือกลางหรือปนกัน, 100 คือสงบ/โล่งใจ/มีหวังสูงมาก
-- ให้ข้อความ free text มีน้ำหนักมากกว่า mood chips ถ้าขัดแย้งกัน
-- ก่อนพิธีให้ดูสภาวะใจปัจจุบัน ไม่ใช่แค่ความหวังในอนาคต
-- หลังพิธีให้ประเมินว่าผู้ใช้โล่งขึ้น ได้คำตอบ สงบขึ้น หรือยังติดค้างอยู่
-- ห้ามวินิจฉัยโรค ห้ามอ้างว่าเป็นคำแนะนำทางการแพทย์
-- reason_th และ summary_th ต้องเป็นภาษาไทย สั้น ชัด ไม่เกิน 30 คำต่อช่อง
-- ตอบเป็น JSON เท่านั้นตาม schema
+เกณฑ์ wellbeing_now:
+- 1-3: ความเป็นอยู่ลำบากชัดเจน (สุขภาพ/การเงิน/งาน/ความสัมพันธ์)
+- 4-6: ยังมีข้อจำกัดหรือไม่มั่นคงระดับกลาง
+- 7-8: โดยรวมค่อนข้างมั่นคง
+- 9-10: มั่นคงและเอื้อต่อชีวิตอย่างชัดเจน
+
+กติกาเพิ่มเติมสำหรับข้อความอธิษฐาน:
+- ถ้ามีสัญญาณว่ากำลังทุกข์อยู่ตอนนี้ เช่น "ไม่อยากทรมาน", "ไม่ลำบากเหมือนที่ผ่านมา" ให้ประเมินปัจจุบันเป็นค่าต่ำ-กลางตามหลักฐาน
+- ถ้าข้อความสะท้อนว่าปัจจุบันดีอยู่แล้วแต่ขอให้ดียิ่งขึ้น ให้ประเมินช่วงกลางสูง-สูง
+- ห้ามให้คะแนนสูงเพียงเพราะถ้อยคำเชิงความหวังในอนาคต
+- ต้องอิงหลักฐานจากข้อความเท่านั้น ห้ามเดาเกินข้อมูล
+
+ให้ตอบเป็น JSON เท่านั้นตาม schema ที่กำหนด
+- reason_th ต้องเป็นภาษาไทย 1 ประโยคสั้น ไม่เกิน 30 คำ
 """.strip()
 
 USER_PROMPT_TEMPLATE = """
-วิเคราะห์ sentiment ของผู้ใช้จากข้อมูลนี้:
-
-ก่อนพิธี:
-- คำถาม: ก่อนเริ่มพิธี ตอนนี้คุณรู้สึกอย่างไร?
-- ข้อความ: {pre_feeling}
-- mood chips: {pre_moods}
-
-หลังพิธี:
-- คำถาม: หลังจากเสี่ยงเซียมซีแล้ว
-- ข้อความ: {post_feeling}
-- mood chips: {post_moods}
-
-ให้เปรียบเทียบก่อน/หลัง และตอบตาม JSON schema เท่านั้น
+วิเคราะห์ข้อความอธิษฐานนี้ตามกติกาอย่างเคร่งครัด:
+"{text}"
 """.strip()
 
 SENTIMENT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "pre": {
-            "type": "object",
-            "properties": {
-                "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                "label": {"type": "string", "enum": ["negative", "mixed", "positive"]},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "reason_th": {"type": "string"},
-            },
-            "required": ["score", "label", "confidence", "reason_th"],
-            "additionalProperties": False,
+        "feeling_now": {"type": "integer", "minimum": 1, "maximum": 10},
+        "wellbeing_now": {"type": "integer", "minimum": 1, "maximum": 10},
+        "reason_th": {
+            "type": "string",
+            "description": "เหตุผลภาษาไทยสั้น 1 ประโยค ไม่เกิน 30 คำ",
         },
-        "post": {
-            "type": "object",
-            "properties": {
-                "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                "label": {"type": "string", "enum": ["negative", "mixed", "positive"]},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "reason_th": {"type": "string"},
-            },
-            "required": ["score", "label", "confidence", "reason_th"],
-            "additionalProperties": False,
-        },
-        "delta": {"type": "integer", "minimum": -100, "maximum": 100},
-        "trend": {"type": "string", "enum": ["improved", "stable", "declined"]},
-        "summary_th": {"type": "string"},
     },
-    "required": ["pre", "post", "delta", "trend", "summary_th"],
-    "propertyOrdering": ["pre", "post", "delta", "trend", "summary_th"],
+    "required": ["feeling_now", "wellbeing_now", "reason_th"],
+    "propertyOrdering": ["feeling_now", "wellbeing_now", "reason_th"],
     "additionalProperties": False,
 }
 
 
-def normalize_moods(moods: list[str] | None) -> list[str]:
-    return [str(mood).strip() for mood in (moods or []) if str(mood).strip()]
-
-
-def build_payload(
-    *,
-    pre_feeling: str,
-    pre_moods: list[str],
-    post_feeling: str,
-    post_moods: list[str],
-    model: str,
-) -> dict[str, Any]:
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        pre_feeling=(pre_feeling or "").strip() or "(ไม่ได้กรอก)",
-        pre_moods=", ".join(pre_moods) or "(ไม่ได้เลือก)",
-        post_feeling=(post_feeling or "").strip() or "(ไม่ได้กรอก)",
-        post_moods=", ".join(post_moods) or "(ไม่ได้เลือก)",
-    )
+def build_payload(text: str, model: str) -> dict[str, Any]:
+    user_prompt = USER_PROMPT_TEMPLATE.format(text=text.strip())
     return {
         "model": model,
         "input": [
@@ -112,7 +77,7 @@ def build_payload(
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "nimidd_ritual_sentiment_response",
+                "name": "thai_sentiment_two_axis_response",
                 "strict": True,
                 "schema": SENTIMENT_SCHEMA,
             }
@@ -120,27 +85,31 @@ def build_payload(
     }
 
 
-def analyze_ritual_sentiment(
+def clamp_score(value: int) -> int:
+    return max(1, min(10, value))
+
+
+def compute_final_score(feeling_now: int, wellbeing_now: int) -> int:
+    raw_score = 0.45 * feeling_now + 0.55 * wellbeing_now
+    return clamp_score(round(raw_score))
+
+
+def analyze_wish_sentiment(
     *,
-    pre_feeling: str = "",
-    pre_moods: list[str] | None = None,
-    post_feeling: str = "",
-    post_moods: list[str] | None = None,
+    text: str,
     env_file: Path | None = None,
     model: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    input_text = text.strip()
+    if not input_text:
+        raise ValueError("text is required")
+
     if env_file is not None:
         load_env_file(env_file)
 
-    resolved_model = model or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
-    payload = build_payload(
-        pre_feeling=pre_feeling,
-        pre_moods=normalize_moods(pre_moods),
-        post_feeling=post_feeling,
-        post_moods=normalize_moods(post_moods),
-        model=resolved_model,
-    )
+    resolved_model = model or os.getenv("OPENAI_SENTIMENT_MODEL") or DEFAULT_SENTIMENT_MODEL
+    payload = build_payload(input_text, resolved_model)
 
     if dry_run:
         return {
@@ -148,11 +117,10 @@ def analyze_ritual_sentiment(
             "message": "Sentiment request payload generated.",
             "model": resolved_model,
             "payload": payload,
-            "pre": {"score": 50, "label": "mixed", "confidence": 0, "reason_th": "dry run"},
-            "post": {"score": 50, "label": "mixed", "confidence": 0, "reason_th": "dry run"},
-            "delta": 0,
-            "trend": "stable",
-            "summary_th": "dry run",
+            "feeling_now": 5,
+            "wellbeing_now": 5,
+            "score": 5,
+            "reason_th": "dry run",
         }
 
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -162,7 +130,14 @@ def analyze_ritual_sentiment(
     response = post_response(payload, api_key)
     output_text = extract_output_text(response)
     parsed = json.loads(output_text)
-    parsed["status"] = "complete"
-    parsed["message"] = "Sentiment analysis complete."
-    parsed["model"] = resolved_model
-    return parsed
+    feeling_now = clamp_score(int(parsed["feeling_now"]))
+    wellbeing_now = clamp_score(int(parsed["wellbeing_now"]))
+    return {
+        "status": "complete",
+        "message": "Sentiment analysis complete.",
+        "model": resolved_model,
+        "feeling_now": feeling_now,
+        "wellbeing_now": wellbeing_now,
+        "score": compute_final_score(feeling_now, wellbeing_now),
+        "reason_th": str(parsed["reason_th"]).strip(),
+    }
