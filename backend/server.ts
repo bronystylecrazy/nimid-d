@@ -2,6 +2,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 import mqtt from 'mqtt';
+import { openAppDb } from './db';
 
 const port = Number(process.env.PORT || 80);
 const staticDir = process.env.STATIC_DIR || join(process.cwd(), 'dist');
@@ -11,6 +12,7 @@ const mqttLogTopic = '#';
 const mqttShakeTopic = 'v1/shake';
 const mqttDetectionTopic = 'v1/detection';
 const sockets = new Set();
+const appDb = openAppDb();
 
 function safeStaticPath(urlPath) {
   const cleanPath = decodeURIComponent(urlPath.split('?')[0] || '/');
@@ -62,6 +64,98 @@ async function proxyPalmReading(req) {
     statusText: response.statusText,
     headers,
   });
+}
+
+async function proxySentiment(req) {
+  const response = await fetch(`${llmServiceUrl}/sentiment`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: await req.text(),
+  });
+  const headers = new Headers(response.headers);
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function jsonResponse(payload, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('content-type', 'application/json; charset=utf-8');
+  return new Response(JSON.stringify(payload), { ...init, headers });
+}
+
+async function readJson(req) {
+  try {
+    return await req.json();
+  } catch {
+    return null;
+  }
+}
+
+async function handleApi(req) {
+  const url = new URL(req.url);
+
+  if (url.pathname.startsWith('/api/uploads/')) {
+    if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 });
+    return appDb.uploadResponse(url.pathname);
+  }
+
+  if (url.pathname === '/api/session') {
+    if (req.method === 'GET') {
+      return jsonResponse({ authenticated: true, ...(appDb.getSessionSnapshot(req) || { authenticated: false }) });
+    }
+    if (req.method === 'DELETE') {
+      appDb.revokeSession(req);
+      return jsonResponse({ ok: true }, { headers: { 'set-cookie': appDb.clearSessionCookie() } });
+    }
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  if (url.pathname === '/api/session/user') {
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+    const body = await readJson(req);
+    if (!body?.user?.name && !body?.user?.displayName) {
+      return jsonResponse({ message: 'user.name is required' }, { status: 400 });
+    }
+    const current = appDb.getSession(req);
+    const saved = appDb.saveUser(body.user, req, current?.userId || null);
+    if (body.ritual) appDb.saveRitualForUser(saved.user.id, saved.user, body.ritual);
+    return jsonResponse({ user: saved.user }, { headers: { 'set-cookie': appDb.sessionCookie(saved.token) } });
+  }
+
+  if (url.pathname === '/api/ritual') {
+    if (req.method !== 'PUT') return new Response('Method not allowed', { status: 405 });
+    const body = await readJson(req);
+    const ritual = appDb.saveRitual(req, body?.ritual || body || {});
+    if (!ritual) return jsonResponse({ message: 'Not authenticated' }, { status: 401 });
+    return jsonResponse({ ritual });
+  }
+
+    if (url.pathname === '/api/readings') {
+    if (req.method === 'GET') {
+      const snapshot = appDb.getSessionSnapshot(req);
+      if (!snapshot) return jsonResponse({ message: 'Not authenticated' }, { status: 401 });
+      return jsonResponse({ readings: snapshot.readings });
+    }
+    if (req.method === 'POST') {
+      const body = await readJson(req);
+      const record = appDb.saveReading(req, body?.record || body || {});
+      if (!record) return jsonResponse({ message: 'Not authenticated' }, { status: 401 });
+      return jsonResponse({ record });
+    }
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  if (url.pathname === '/api/sentiment') {
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+    return proxySentiment(req);
+  }
+
+  return null;
 }
 
 function startMqttLogger() {
@@ -119,6 +213,9 @@ Bun.serve({
       if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return proxyPalmReading(req);
     }
+    if (url.pathname.startsWith('/api/')) {
+      return handleApi(req).then((response) => response || new Response('Not found', { status: 404 }));
+    }
     return staticResponse(req);
   },
   websocket: {
@@ -143,3 +240,4 @@ console.log(`[server] static ${staticDir}`);
 console.log(`[server] realtime websocket /events`);
 console.log(`[server] mqtt broker ${mqttBrokerUrl}`);
 console.log(`[server] llm service ${llmServiceUrl}`);
+console.log(`[server] sqlite ${appDb.dbPath}`);

@@ -6,8 +6,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .analyze_sentiment import analyze_ritual_sentiment
 from .palm_flow import run_palm_flow
 
 
@@ -22,6 +23,26 @@ class PalmReadingResponse(BaseModel):
     llm_panel_png_base64: str
     reading: dict
     manifest: dict
+
+
+class SentimentRequest(BaseModel):
+    pre_feeling: str = ""
+    pre_moods: list[str] = Field(default_factory=list)
+    post_feeling: str = ""
+    post_moods: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+    model: str = ""
+
+
+class SentimentResponse(BaseModel):
+    status: str
+    message: str
+    model: str
+    pre: dict
+    post: dict
+    delta: int
+    trend: str
+    summary_th: str
 
 
 app = FastAPI(title="Nimidd LLM Service", version="0.1.0")
@@ -72,6 +93,23 @@ async def analyze_palm_image(
         reading=json.loads(result["reading_json"]),
         manifest=json.loads(result["manifest_json"]),
     )
+
+
+@app.post("/sentiment", response_model=SentimentResponse)
+def analyze_sentiment(request: SentimentRequest) -> SentimentResponse:
+    try:
+        result = analyze_ritual_sentiment(
+            pre_feeling=request.pre_feeling,
+            pre_moods=request.pre_moods,
+            post_feeling=request.post_feeling,
+            post_moods=request.post_moods,
+            env_file=env_file(),
+            model=request.model or None,
+            dry_run=request.dry_run,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return SentimentResponse(**result)
 
 
 def main() -> None:

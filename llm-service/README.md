@@ -15,6 +15,7 @@ The server listens on `0.0.0.0:8000` by default.
 
 - `GET /health`
 - `POST /palm-reading`
+- `POST /sentiment`
 
 Example:
 
@@ -32,6 +33,19 @@ The response includes:
 - `llm_panel_png_base64`
 - `reading`
 - `manifest`
+
+Sentiment example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/sentiment \
+  -H "content-type: application/json" \
+  -d '{
+    "pre_feeling": "วันนี้รู้สึกกังวลเรื่องงาน",
+    "pre_moods": ["กังวล"],
+    "post_feeling": "รู้สึกโล่งใจขึ้นและได้คำตอบ",
+    "post_moods": ["โล่งใจ", "ได้รับคำตอบ"]
+  }'
+```
 
 ## Environment
 

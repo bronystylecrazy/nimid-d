@@ -1,4 +1,7 @@
-// components.jsx — shared UI primitives + content data + doodle SVGs
+// @ts-nocheck
+import React from 'react';
+
+// components.tsx — shared UI primitives + content data + doodle SVGs
 // for the เซียมซี ritual prototype.
 
 // ─────────────────────────────────────────────
@@ -315,3 +318,23 @@ function BoxPreview({ wood, trim, size = 100 }) {
   );
 }
 window.BoxPreview = BoxPreview;
+
+export {
+  TEMPLES,
+  ACTIVITIES,
+  MOODS_PRE,
+  BOXES,
+  CATEGORIES,
+  MUSIC,
+  FORTUNES,
+  Icon,
+  BlobShape,
+  Blobs,
+  Sparkles,
+  TempleOrnament,
+  StepProgress,
+  SelectCard,
+  AppShell,
+  Logo,
+  BoxPreview,
+};

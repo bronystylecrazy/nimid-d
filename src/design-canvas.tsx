@@ -1,5 +1,10 @@
+// @ts-nocheck
+import React from 'react';
+import { createPortal } from 'react-dom';
 
-// DesignCanvas.jsx — Figma-ish design canvas wrapper
+const ReactDOM = { createPortal };
+
+// DesignCanvas.tsx — Figma-ish design canvas wrapper
 // Warm gray grid bg + Sections + Artboards + PostIt notes.
 // Artboards are reorderable (grip-drag), deletable, labels/titles are
 // inline-editable, and any artboard can be opened in a fullscreen focus
@@ -964,3 +969,4 @@ function DCPostIt({ children, top, left, right, bottom, rotate = -2, width = 180
 
 Object.assign(window, { DesignCanvas, DCSection, DCArtboard, DCPostIt });
 
+export { DesignCanvas, DCSection, DCArtboard, DCPostIt };

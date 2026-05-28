@@ -11,6 +11,10 @@ services:
     environment:
       MQTT_BROKER_URL: mqtt://127.0.0.1:1883
       LLM_SERVICE_URL: http://127.0.0.1:8000
+      DB_PATH: /app/data/nimidd.sqlite
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - ./data:/app/data
     labels:
       com.centurylinklabs.watchtower.enable: "true"
 

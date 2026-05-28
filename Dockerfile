@@ -18,6 +18,8 @@ ENV NODE_ENV=production
 ENV PORT=80
 ENV STATIC_DIR=/app/dist
 ENV MQTT_BROKER_URL=mqtt://127.0.0.1:1883
+ENV DB_PATH=/app/data/nimidd.sqlite
+ENV UPLOAD_DIR=/app/data/uploads
 
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
@@ -26,5 +28,6 @@ COPY backend ./backend
 COPY --from=build /app/dist ./dist
 
 EXPOSE 80
+VOLUME ["/app/data"]
 
 CMD ["bun", "run", "start"]

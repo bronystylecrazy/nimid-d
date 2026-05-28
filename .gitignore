@@ -82,6 +82,7 @@ out
 .nuxt
 dist
 .output
+data/
 llm-service/output/
 llm-service/.venv/
 llm-service/src/llm_service/_generated/
