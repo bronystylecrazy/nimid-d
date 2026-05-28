@@ -257,7 +257,7 @@ function AppShell({ step, children, temple = 'thai', density = 'med' }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Logo/>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>เซียมซี</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>NIMID D</span>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Mindful Ritual</span>
           </div>
         </div>

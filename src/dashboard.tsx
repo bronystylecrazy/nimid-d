@@ -1,24 +1,39 @@
 // @ts-nocheck
 import React from 'react';
 import { DashboardActivity, DashboardBar, DashboardMetric, DashboardStartCard } from './dashboard-components';
-import { calcCurrentStreak, calcWeeklyInsights, mostFrequent } from './dashboard-utils';
+import { calcCurrentStreak, calcWeeklyInsights, mostFrequent, readingTime } from './dashboard-utils';
 
-export default function DashboardScreen({ ritual, setRitual, readings, go, deps }) {
-  const { CATEGORIES, TEMPLES, BOXES, FORTUNES, Icon, Sparkles, makeReadingRecord } = deps;
-  const sorted = React.useMemo(() => [...readings].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), [readings]);
+export default function DashboardScreen({
+  ritual,
+  setRitual,
+  readings,
+  isLoadingReadings = false,
+  readingsError = '',
+  readingsSource = 'backend',
+  refreshReadings,
+  go,
+  deps,
+}) {
+  const { CATEGORIES, TEMPLES, BOXES, FORTUNES, Icon, Sparkles } = deps;
+  const sorted = React.useMemo(() => [...(readings || [])].sort((a, b) => readingTime(b) - readingTime(a)), [readings]);
   const latest = sorted[0] || null;
   const total = sorted.length;
-  const favoriteCategory = mostFrequent(sorted.map(r => r?.ritual?.category || r?.fortune?.category).filter(Boolean)) || ritual.category || 'work';
-  const favoriteCatMeta = CATEGORIES.find(c => c.id === favoriteCategory) || CATEGORIES.find(c => c.id === 'work');
-  const luckyTemple = mostFrequent(sorted.map(r => r?.ritual?.temple).filter(Boolean)) || ritual.temple || 'thai';
-  const luckyTempleMeta = TEMPLES.find(t => t.id === luckyTemple) || TEMPLES[0];
+  const recordedFavoriteCategory = mostFrequent(sorted.map(r => r?.ritual?.category || r?.fortune?.category).filter(Boolean));
+  const favoriteCategory = recordedFavoriteCategory || ritual.category || 'work';
+  const favoriteCatMeta = CATEGORIES.find(c => c.id === recordedFavoriteCategory);
+  const favoriteStartMeta = CATEGORIES.find(c => c.id === favoriteCategory) || CATEGORIES.find(c => c.id === 'work');
+  const luckyTemple = mostFrequent(sorted.map(r => r?.ritual?.temple).filter(Boolean));
+  const luckyTempleMeta = TEMPLES.find(t => t.id === luckyTemple);
   const streak = calcCurrentStreak(sorted);
   const weekly = calcWeeklyInsights(sorted);
-  const displayRecord = latest || makeReadingRecord(ritual);
-  const displayCat = CATEGORIES.find(c => c.id === (displayRecord.ritual?.category || displayRecord.fortune?.category)) || CATEGORIES[2];
-  const displayTemple = TEMPLES.find(t => t.id === displayRecord.ritual?.temple) || TEMPLES[0];
-  const displayBox = BOXES.find(b => b.id === displayRecord.ritual?.box) || BOXES[0];
+  const displayCat = CATEGORIES.find(c => c.id === (latest?.ritual?.category || latest?.fortune?.category)) || CATEGORIES[2];
+  const displayTemple = TEMPLES.find(t => t.id === latest?.ritual?.temple) || TEMPLES[0];
+  const displayBox = BOXES.find(b => b.id === latest?.ritual?.box) || BOXES[0];
   const DisplayIcon = Icon[displayCat.icon] || Icon.sparkle;
+  const showStatus = isLoadingReadings || readingsError || readingsSource === 'local';
+  const statusText = isLoadingReadings
+    ? 'กำลังโหลดข้อมูลจากระบบ...'
+    : readingsError || (readingsSource === 'local' ? 'กำลังแสดงข้อมูลบนเครื่องนี้ ยังไม่ได้ยืนยันจากระบบ' : '');
 
   const startReading = (category) => {
     setRitual((r) => ({
@@ -53,10 +68,34 @@ export default function DashboardScreen({ ritual, setRitual, readings, go, deps 
           </button>
         </div>
 
+        {showStatus && (
+          <div className="card" style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+            padding: '12px 14px', marginBottom: 20,
+            background: readingsSource === 'local' || readingsError ? 'rgba(255,255,255,.72)' : 'var(--surface-soft)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <span style={{
+                width: 30, height: 30, borderRadius: 10, background: isLoadingReadings ? 'var(--c-lavender)' : 'var(--c-gold)',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto',
+              }}>
+                <Icon.bell size={15}/>
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.45 }}>{statusText}</span>
+            </div>
+            {refreshReadings && (
+              <button className="btn btn-tertiary" onClick={refreshReadings} disabled={isLoadingReadings}
+                style={{ padding: '8px 10px', fontSize: 12, flex: '0 0 auto' }}>
+                Refresh
+              </button>
+            )}
+          </div>
+        )}
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 16, marginBottom: 20 }}>
           <DashboardMetric icon={Icon.sparkle} label="Total Readings" value={total} tone="var(--c-peach)"/>
-          <DashboardMetric icon={Icon[favoriteCatMeta.icon]} label="Favorite Feature" value={favoriteCatMeta.name} tone="var(--c-lavender)"/>
-          <DashboardMetric icon={Icon.lotus} label="Lucky Element" value={luckyTempleMeta.name} tone="var(--c-gold)"/>
+          <DashboardMetric icon={Icon[favoriteCatMeta?.icon || favoriteStartMeta?.icon] || Icon.compass} label="Favorite Feature" value={favoriteCatMeta?.name || 'ยังไม่มีข้อมูล'} tone="var(--c-lavender)"/>
+          <DashboardMetric icon={Icon.lotus} label="Lucky Element" value={luckyTempleMeta?.name || 'ยังไม่มีข้อมูล'} tone="var(--c-gold)"/>
           <DashboardMetric icon={Icon.bell} label="Current Streak" value={`${streak} วัน`} tone="var(--c-mint)"/>
         </div>
 
@@ -78,10 +117,10 @@ export default function DashboardScreen({ ritual, setRitual, readings, go, deps 
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ fontSize: 26, lineHeight: 1.2, marginBottom: 8 }}>
-                    {displayRecord.fortune.title}
+                    {latest.fortune?.title || 'ผลเซียมซีล่าสุด'}
                   </h3>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-                    <span className="badge">เลข {displayRecord.fortune.num}</span>
+                    <span className="badge">เลข {latest.fortune?.num || '-'}</span>
                     <span className="badge">{displayTemple.name}</span>
                     <span className="badge">{displayBox.name}</span>
                   </div>
@@ -90,7 +129,7 @@ export default function DashboardScreen({ ritual, setRitual, readings, go, deps 
                     background: 'var(--surface-soft)', padding: '11px 14px',
                     fontFamily: 'var(--font-display)', fontSize: 15, lineHeight: 1.45,
                   }}>
-                    "{displayRecord.fortune.advice}"
+                    "{latest.fortune?.advice || latest.fortune?.text || 'เปิดดูผลเต็มเพื่ออ่านข้อความทั้งหมด'}"
                   </div>
                 </div>
                 <button className="btn btn-secondary" onClick={openLatestResult}
@@ -161,7 +200,7 @@ export default function DashboardScreen({ ritual, setRitual, readings, go, deps 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
               {CATEGORIES.map((c) => {
                 const f = FORTUNES[c.id];
-                const active = c.id === favoriteCategory;
+                const active = Boolean(recordedFavoriteCategory) && c.id === favoriteCategory;
                 const unlocked = sorted.some(r => (r.ritual?.category || r.fortune?.category) === c.id);
                 return (
                   <button key={c.id} onClick={() => startReading(c.id)} style={{

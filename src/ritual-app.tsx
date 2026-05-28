@@ -3,7 +3,7 @@ import React from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import * as THREE from 'three';
 import { AppNav, PageFrame } from './app-navigation';
-import { analyzeSentiment, clearSession, getSessionSnapshot, saveReading, saveRitualDraft, saveSessionUser } from './api';
+import { analyzeSentiment, clearSession, getReadings, getSessionSnapshot, saveReading, saveRitualDraft, saveSessionUser } from './api';
 import DashboardScreen from './dashboard';
 import { DesignCanvas, DCArtboard, DCPostIt, DCSection } from './design-canvas';
 import {
@@ -305,7 +305,7 @@ function RegisterForm({ onContinue, initial = {} }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Logo/>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>เซียมซี</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>NIMID D</span>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Mindful Ritual</span>
           </div>
         </div>
@@ -840,7 +840,7 @@ function WelcomeBack({ user, onContinue, onForget }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <Logo/>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>เซียมซี</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' }}>NIMID D</span>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Mindful Ritual</span>
           </div>
         </div>
@@ -3434,7 +3434,7 @@ function FortuneSlip({ fortune, cat, temple }) {
           transform: 'rotate(-6deg)',
           letterSpacing: '0.05em',
         }}>
-          เซียมซี<br/>ศักดิ์<br/>สิทธิ์
+          NIMID<br/>D
         </div>
       </div>
 
@@ -4065,7 +4065,7 @@ function WallpaperArt({ id, palette, name }) {
         fontFamily: 'var(--font-display)', fontSize: 10, letterSpacing: '.16em',
         textTransform: 'uppercase',
       }}>
-        เซียมซี · {name}
+        NIMID D · {name}
       </div>
     </>
   );
@@ -4871,7 +4871,7 @@ function OnePageHero({ onStart, heroRef }) {
       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
         <Logo/>
         <div style={{ textAlign: 'left' }}>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 500 }}>เซียมซี</div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 500 }}>NIMID D</div>
           <div style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Mindful Ritual</div>
         </div>
       </div>
@@ -5194,16 +5194,49 @@ function RitualPages() {
   const location = useLocation();
   const [ritual, setRitual] = useRitualState();
   const [readings, setReadings] = React.useState(() => readReadingHistory());
+  const [readingsLoading, setReadingsLoading] = React.useState(true);
+  const [readingsError, setReadingsError] = React.useState('');
+  const [readingsSource, setReadingsSource] = React.useState('local');
   const [t, setTweak] = useSharedTweaks();
   const hydratedSession = React.useRef(false);
   const showPageTweaks = !['/journey', '/canvas'].includes(location.pathname);
 
+  const useLocalReadingsFallback = React.useCallback((message) => {
+    setReadings(readReadingHistory());
+    setReadingsSource('local');
+    setReadingsError(message);
+  }, []);
+
+  const refreshReadings = React.useCallback(async () => {
+    setReadingsLoading(true);
+    setReadingsError('');
+    try {
+      const payload = await getReadings();
+      const nextReadings = Array.isArray(payload?.readings) ? payload.readings : [];
+      writeReadingHistory(nextReadings);
+      setReadings(nextReadings);
+      setReadingsSource('backend');
+      return nextReadings;
+    } catch (error) {
+      useLocalReadingsFallback(error?.message || 'โหลดข้อมูลจากระบบไม่สำเร็จ กำลังแสดงข้อมูลบนเครื่องนี้');
+      return null;
+    } finally {
+      setReadingsLoading(false);
+    }
+  }, [useLocalReadingsFallback]);
+
   React.useEffect(() => {
     let cancelled = false;
+    setReadingsLoading(true);
+    setReadingsError('');
     getSessionSnapshot()
       .then((snapshot) => {
+        if (cancelled) return;
         hydratedSession.current = true;
-        if (cancelled || !snapshot?.authenticated) return;
+        if (!snapshot?.authenticated) {
+          useLocalReadingsFallback('ยังไม่ได้เชื่อมต่อบัญชี กำลังแสดงข้อมูลบนเครื่องนี้');
+          return;
+        }
         if (snapshot.user) {
           try { localStorage.setItem(LS_USER_KEY, JSON.stringify(snapshot.user)); } catch {}
         }
@@ -5215,11 +5248,20 @@ function RitualPages() {
         if (Array.isArray(snapshot.readings)) {
           writeReadingHistory(snapshot.readings);
           setReadings(snapshot.readings);
+          setReadingsSource('backend');
+          setReadingsError('');
         }
       })
-      .catch(() => { hydratedSession.current = true; });
+      .catch((error) => {
+        if (cancelled) return;
+        hydratedSession.current = true;
+        useLocalReadingsFallback(error?.message || 'โหลดข้อมูลจากระบบไม่สำเร็จ กำลังแสดงข้อมูลบนเครื่องนี้');
+      })
+      .finally(() => {
+        if (!cancelled) setReadingsLoading(false);
+      });
     return () => { cancelled = true; };
-  }, [setRitual]);
+  }, [setRitual, useLocalReadingsFallback]);
 
   React.useEffect(() => {
     if (!hydratedSession.current || !ritual?.user) return;
@@ -5233,13 +5275,20 @@ function RitualPages() {
   const saveAndOpenDashboard = async (sentiment = null) => {
     const record = saveReadingRecord(ritual, sentiment);
     setReadings(readReadingHistory());
+    setReadingsSource('local');
+    setReadingsError('กำลังบันทึกขึ้นระบบ ข้อมูลล่าสุดอาจยังเป็นข้อมูลบนเครื่องนี้');
+    go('/dashboard');
     try {
       const saved = await saveReading(record);
       const next = [saved.record || record, ...readReadingHistory().filter((r) => r.id !== record.id)];
       writeReadingHistory(next);
       setReadings(next);
-    } catch {}
-    go('/dashboard');
+      setReadingsSource('backend');
+      setReadingsError('');
+    } catch (error) {
+      setReadingsSource('local');
+      setReadingsError(error?.message || 'บันทึกขึ้นระบบไม่สำเร็จ กำลังแสดงข้อมูลบนเครื่องนี้');
+    }
   };
   const restart = () => {
     setRitual((r) => ({ ...DEFAULT_RITUAL, user: r.user }));
@@ -5284,6 +5333,10 @@ function RitualPages() {
             ritual={ritual}
             setRitual={setRitual}
             readings={readings}
+            isLoadingReadings={readingsLoading}
+            readingsError={readingsError}
+            readingsSource={readingsSource}
+            refreshReadings={refreshReadings}
             go={go}
             deps={{ CATEGORIES, TEMPLES, BOXES, FORTUNES, Icon, Sparkles, makeReadingRecord }}/>
         }/>

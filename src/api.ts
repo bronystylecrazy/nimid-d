@@ -44,6 +44,10 @@ export function saveReading(record) {
   });
 }
 
+export function getReadings() {
+  return apiJson('/api/readings');
+}
+
 export function analyzeSentiment(payload) {
   return apiJson('/api/sentiment', {
     method: 'POST',
