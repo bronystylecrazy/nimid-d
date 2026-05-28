@@ -1,0 +1,83 @@
+{
+  "classes": [
+    "excited",
+    "focus",
+    "relax",
+    "hesitate"
+  ],
+  "feature_names": [
+    "mean_gyro_mag",
+    "mean_jerk",
+    "std_acc_motion",
+    "motion_pulse_frequency",
+    "peak_interval_std"
+  ],
+  "prototypes": {
+    "excited": {
+      "mean": {
+        "mean_gyro_mag": 159.94130884918238,
+        "mean_jerk": 40.79471119035103,
+        "std_acc_motion": 1.2157474810696929,
+        "motion_pulse_frequency": 3.32673777445304,
+        "peak_interval_std": 0.17705724554118613
+      },
+      "std": {
+        "mean_gyro_mag": 52.886735857314676,
+        "mean_jerk": 18.894688158887227,
+        "std_acc_motion": 0.3615138667152295,
+        "motion_pulse_frequency": 0.7037747089533121,
+        "peak_interval_std": 0.1170568655819711
+      }
+    },
+    "focus": {
+      "mean": {
+        "mean_gyro_mag": 212.4051941756105,
+        "mean_jerk": 55.176024874731254,
+        "std_acc_motion": 1.2940928977633825,
+        "motion_pulse_frequency": 3.655213773013503,
+        "peak_interval_std": 0.11988516073605299
+      },
+      "std": {
+        "mean_gyro_mag": 52.886735857314676,
+        "mean_jerk": 21.256705670347618,
+        "std_acc_motion": 0.3615138667152295,
+        "motion_pulse_frequency": 0.6034319838022087,
+        "peak_interval_std": 0.08400585349522915
+      }
+    },
+    "relax": {
+      "mean": {
+        "mean_gyro_mag": 107.8808325848477,
+        "mean_jerk": 17.016204310875175,
+        "std_acc_motion": 0.5910804044884317,
+        "motion_pulse_frequency": 3.4778771427291746,
+        "peak_interval_std": 0.09078752912089841
+      },
+      "std": {
+        "mean_gyro_mag": 52.886735857314676,
+        "mean_jerk": 18.894688158887227,
+        "std_acc_motion": 0.3615138667152295,
+        "motion_pulse_frequency": 0.5282772295854019,
+        "peak_interval_std": 0.08400585349522915
+      }
+    },
+    "hesitate": {
+      "mean": {
+        "mean_gyro_mag": 93.03530624690168,
+        "mean_jerk": 13.665770641214618,
+        "std_acc_motion": 0.552609525283246,
+        "motion_pulse_frequency": 2.89023141416636,
+        "peak_interval_std": 0.21783476197632456
+      },
+      "std": {
+        "mean_gyro_mag": 52.886735857314676,
+        "mean_jerk": 18.894688158887227,
+        "std_acc_motion": 0.3615138667152295,
+        "motion_pulse_frequency": 0.8011479759066554,
+        "peak_interval_std": 0.14837928115779755
+      }
+    }
+  },
+  "shrink_alpha": 0.2,
+  "std_floor_k": 0.75
+}

@@ -37,6 +37,7 @@ services:
     restart: unless-stopped
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_SIAMSEE_MODEL: ${OPENAI_SIAMSEE_MODEL:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       HTTP_PORT: 8000
       LLM_OUTPUT_DIR: /app/output

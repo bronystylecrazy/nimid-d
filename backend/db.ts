@@ -104,6 +104,7 @@ function ritualFromRow(row, user) {
     box: row.box || 'gold',
     category: row.category || 'work',
     music: row.music || 'bell',
+    siamseeStick: parseJson(row.siamsee_stick_json, null),
   };
 }
 
@@ -138,6 +139,16 @@ function readingFromRow(row) {
       reason_th: row.sentiment_reason_th || '',
       model: row.sentiment_model || '',
       status: row.sentiment_status || '',
+    },
+    siamsee: row.siamsee_status == null ? null : {
+      status: row.siamsee_status,
+      reading: row.siamsee_reading || '',
+      fields: parseJson(row.siamsee_fields_json, null),
+      predicted_condition: row.siamsee_condition || '',
+      condition_context: parseJson(row.siamsee_condition_context_json, null),
+      model: row.siamsee_model || '',
+      siamsee_stick: parseJson(row.siamsee_stick_json, null),
+      stick_number: row.siamsee_stick_number,
     },
   };
 }
@@ -257,8 +268,8 @@ export function openAppDb(options = {}) {
     revokeSession: db.query('UPDATE user_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL'),
     ritualByUser: db.query('SELECT * FROM ritual_states WHERE user_id = ?'),
     upsertRitual: db.query(`
-      INSERT INTO ritual_states (user_id, activity, feeling, moods_json, temple, box, category, music, current_step, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ritual_states (user_id, activity, feeling, moods_json, temple, box, category, music, siamsee_stick_json, current_step, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         activity = excluded.activity,
         feeling = excluded.feeling,
@@ -267,6 +278,7 @@ export function openAppDb(options = {}) {
         box = excluded.box,
         category = excluded.category,
         music = excluded.music,
+        siamsee_stick_json = excluded.siamsee_stick_json,
         current_step = excluded.current_step,
         updated_at = excluded.updated_at
     `),
@@ -278,8 +290,11 @@ export function openAppDb(options = {}) {
         pre_score, post_score, post_moods_json,
         sentiment_feeling_now, sentiment_wellbeing_now, sentiment_score,
         sentiment_reason_th, sentiment_model, sentiment_status,
+        siamsee_status, siamsee_reading, siamsee_fields_json,
+        siamsee_condition, siamsee_condition_context_json, siamsee_model,
+        siamsee_stick_number, siamsee_stick_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
   };
 
@@ -387,6 +402,7 @@ export function openAppDb(options = {}) {
       ritual.box || 'gold',
       ritual.category || 'work',
       ritual.music || 'bell',
+      jsonString(ritual.siamseeStick, null),
       ritual.currentStep || 'login',
       now,
     );
@@ -405,6 +421,7 @@ export function openAppDb(options = {}) {
     const ritual = record.ritual || {};
     const fortune = record.fortune || {};
     const sentiment = record.sentiment || {};
+    const siamsee = record.siamsee || {};
     const id = record.id || randomId('reading');
     statements.insertReading.run(
       id,
@@ -432,6 +449,14 @@ export function openAppDb(options = {}) {
       sentiment.reason_th || null,
       sentiment.model || null,
       sentiment.status || null,
+      siamsee.status || null,
+      siamsee.reading || null,
+      jsonString(siamsee.fields, null),
+      siamsee.predicted_condition || null,
+      jsonString(siamsee.condition_context, null),
+      siamsee.model || null,
+      siamsee.stick_number || siamsee.siamsee_stick?.stick_number || null,
+      jsonString(siamsee.siamsee_stick, null),
       record.createdAt || nowIso(),
     );
     return readingFromRow(db.query('SELECT * FROM fortune_readings WHERE id = ?').get(id));

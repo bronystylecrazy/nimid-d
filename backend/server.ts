@@ -82,6 +82,22 @@ async function proxySentiment(req) {
   });
 }
 
+async function proxySiamseeReading(req) {
+  const response = await fetch(`${llmServiceUrl}/siamsee-reading`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: await req.text(),
+  });
+  const headers = new Headers(response.headers);
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function jsonResponse(payload, init = {}) {
   const headers = new Headers(init.headers || {});
   headers.set('content-type', 'application/json; charset=utf-8');
@@ -153,6 +169,11 @@ async function handleApi(req) {
   if (url.pathname === '/api/sentiment') {
     if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
     return proxySentiment(req);
+  }
+
+  if (url.pathname === '/api/siamsee-reading') {
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+    return proxySiamseeReading(req);
   }
 
   return null;

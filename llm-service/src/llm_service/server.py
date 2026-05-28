@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .analyze_sentiment import analyze_wish_sentiment
 from .call_gpt_palm_reader import load_env_file
 from .palm_flow import run_palm_flow
+from .siamsee import generate_siamsee_reading
 
 
 class HealthResponse(BaseModel):
@@ -40,6 +41,27 @@ class SentimentResponse(BaseModel):
     wellbeing_now: int
     score: int
     reason_th: str
+
+
+class SiamseeReadingRequest(BaseModel):
+    palm_reading: dict
+    shake_csv_text: str = ""
+    condition: dict | None = None
+    stick_number: int | None = None
+    siamsee_stick: dict | None = None
+    dry_run: bool = False
+    model: str = ""
+
+
+class SiamseeReadingResponse(BaseModel):
+    status: str
+    message: str
+    model: str
+    reading: str
+    fields: dict
+    predicted_condition: str
+    condition_context: dict
+    siamsee_stick: dict | None = None
 
 
 app = FastAPI(title="Nimidd LLM Service", version="0.1.0")
@@ -124,6 +146,26 @@ def analyze_sentiment(request: SentimentRequest) -> SentimentResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return SentimentResponse(**result)
+
+
+@app.post("/siamsee-reading", response_model=SiamseeReadingResponse)
+def analyze_siamsee_reading(request: SiamseeReadingRequest) -> SiamseeReadingResponse:
+    try:
+        result = generate_siamsee_reading(
+            palm_reading=request.palm_reading,
+            shake_csv_text=request.shake_csv_text,
+            condition=request.condition,
+            stick_number=request.stick_number,
+            siamsee_stick=request.siamsee_stick,
+            env_file=env_file(),
+            model=request.model or None,
+            dry_run=request.dry_run,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if hasattr(result, "to_api_dict"):
+        result = result.to_api_dict()
+    return SiamseeReadingResponse(**result)
 
 
 def main() -> None:

@@ -3,9 +3,10 @@ import React from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import * as THREE from 'three';
 import { AppNav, PageFrame } from './app-navigation';
-import { analyzeSentiment, clearSession, getReadings, getSessionSnapshot, saveReading, saveRitualDraft, saveSessionUser } from './api';
+import { analyzeSentiment, clearSession, generateSiamseeReading, getReadings, getSessionSnapshot, saveReading, saveRitualDraft, saveSessionUser } from './api';
 import DashboardScreen from './dashboard';
 import { DesignCanvas, DCArtboard, DCPostIt, DCSection } from './design-canvas';
+import siamseeData from './siamsee.json';
 import {
   ACTIVITIES,
   AppShell,
@@ -137,6 +138,150 @@ async function dataUrlToBlob(dataUrl) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stableHash(value) {
+  const input = typeof value === 'string' ? value : JSON.stringify(value || {});
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function finiteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function shakeSampleFromDetection(data, startAtMs) {
+  const sourceTime = finiteNumber(data?.t_ms ?? data?.timestamp_ms, performance.now());
+  const accel = data?.linear_accel_magnitude_g ?? data?.accel_euclidean_g;
+  const gyro = data?.gyro_magnitude_dps ?? Math.hypot(
+    finiteNumber(data?.gyro_x_dps),
+    finiteNumber(data?.gyro_y_dps),
+    finiteNumber(data?.gyro_z_dps),
+  );
+  const linearAccel = finiteNumber(accel, NaN);
+  const gyroMagnitude = finiteNumber(gyro, NaN);
+  if (!Number.isFinite(linearAccel) || !Number.isFinite(gyroMagnitude)) return null;
+  return {
+    t_ms: Math.max(0, Math.round(sourceTime - startAtMs)),
+    linear_accel_magnitude_g: linearAccel,
+    gyro_magnitude_dps: gyroMagnitude,
+  };
+}
+
+function shakeSamplesToCsv(samples) {
+  const lines = ['t_ms,linear_accel_magnitude_g,gyro_magnitude_dps'];
+  for (const sample of samples) {
+    lines.push([
+      Math.round(sample.t_ms),
+      finiteNumber(sample.linear_accel_magnitude_g).toFixed(3),
+      finiteNumber(sample.gyro_magnitude_dps).toFixed(3),
+    ].join(','));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function makeFallbackSiamsee(status = 'fallback', siamseeStick = null) {
+  return {
+    status,
+    reading: '',
+    fields: null,
+    predicted_condition: 'focus',
+    siamsee_stick: siamseeStick,
+    stick_number: siamseeStick?.stick_number || null,
+      condition_context: {
+      predicted_condition: 'focus',
+      confidence: 0,
+      energy_level: 'high',
+      stability_level: 'high',
+      thai_label: 'โฟกัส มีพลัง มีจังหวะ',
+      ambiguous: true,
+    },
+    model: '',
+  };
+}
+
+const SIAMSEE_STICKS = Array.isArray(siamseeData?.fortune_sticks) ? siamseeData.fortune_sticks : [];
+
+function getSiamseeStick(stickNumber) {
+  return SIAMSEE_STICKS.find((stick) => Number(stick.stick_number) === Number(stickNumber)) || null;
+}
+
+function randomSiamseeStick() {
+  const fallbackNumber = Math.floor(Math.random() * 30) + 1;
+  const fallback = getSiamseeStick(fallbackNumber);
+  if (!SIAMSEE_STICKS.length) return { stick_number: fallbackNumber };
+  return fallback || SIAMSEE_STICKS[Math.floor(Math.random() * SIAMSEE_STICKS.length)];
+}
+
+function fortuneFromSiamseeStick(stick, fallback, category) {
+  if (!stick) return fallback;
+  const categoryText = category === 'love'
+    ? stick.love
+    : category === 'work'
+      ? stick.work
+      : category === 'money'
+        ? stick.money
+        : stick.overall;
+  return {
+    ...fallback,
+    category,
+    num: String(stick.stick_number || fallback.num),
+    title: stick.title || fallback.title,
+    text: categoryText || stick.overall || fallback.text,
+    advice: stick.advice || fallback.advice,
+    luck: [String(stick.stick_number || fallback.luck?.[0] || fallback.num)],
+  };
+}
+
+function makeSiamseeCacheKey(state, shakeSession) {
+  const userId = state?.user?.id || state?.user?.name || 'guest';
+  return [
+    userId,
+    stableHash(state?.user?.palmReading || {}),
+    shakeSession?.durationMs || 0,
+    shakeSession?.sampleCount || 0,
+    state?.category || 'work',
+    state?.siamseeStick?.stick_number || shakeSession?.stickNumber || 0,
+  ].join(':');
+}
+
+function startSiamseePrefetch(state, shakeSession) {
+  const palmReading = state?.user?.palmReading;
+  const key = makeSiamseeCacheKey(state, shakeSession);
+  if (!palmReading || !Object.keys(palmReading).length) {
+    window.__nimiddSiamseeResult = { key, status: 'fallback', result: makeFallbackSiamsee('fallback', state?.siamseeStick || null) };
+    return window.__nimiddSiamseeResult;
+  }
+  const existing = window.__nimiddSiamseeResult;
+  if (existing?.key === key && ['loading', 'complete'].includes(existing.status)) return existing;
+
+  const payload = {
+    palm_reading: palmReading,
+    shake_csv_text: shakeSession?.csvText || '',
+    condition: shakeSession?.csvText ? null : { predicted_condition: 'focus', confidence: 0, distances: {} },
+    stick_number: state?.siamseeStick?.stick_number || shakeSession?.stickNumber || null,
+    siamsee_stick: state?.siamseeStick || null,
+  };
+  const entry = { key, status: 'loading', promise: null, result: null, error: null };
+  entry.promise = generateSiamseeReading(payload)
+    .then((result) => {
+      entry.status = 'complete';
+      entry.result = result;
+      return result;
+    })
+    .catch((error) => {
+      entry.status = 'error';
+      entry.error = error;
+      entry.result = makeFallbackSiamsee('error', state?.siamseeStick || null);
+      return entry.result;
+    });
+  window.__nimiddSiamseeResult = entry;
+  return entry;
 }
 
 function waitForPaint() {
@@ -1725,11 +1870,12 @@ function WalkingVisual({ t }) {
 // Stylized low-poly temple diorama. Click box to shake; meter fills; one
 // stick rises out. Plays a soft bell tone on completion.
 
-function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
+function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol = 0.5 }) {
   const mountRef = React.useRef(null);
   const sceneApiRef = React.useRef(null);
   const onShakeRef = React.useRef(null);
   const lastEnergyAtRef = React.useRef(0);
+  const shakeRecorderRef = React.useRef({ startedAt: null, startedAtMs: null, samples: [], complete: false });
   const [intentEnergy, setIntentEnergy] = React.useState(0);
   const [phase, setPhase] = React.useState('ready'); // ready | shaking | revealed
   const [mqttStatus, setMqttStatus] = React.useState(window.__mqttStatus || 'connecting');
@@ -1783,6 +1929,30 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
   }, [playBell]);
   onShakeRef.current = onShake;
 
+  const finishShakeSession = React.useCallback(() => {
+    const recorder = shakeRecorderRef.current;
+    if (recorder.complete) return state.shakeSession || null;
+    recorder.complete = true;
+    const samples = recorder.samples || [];
+    const durationMs = samples.length ? samples[samples.length - 1].t_ms : 0;
+    const valid = samples.length >= 8 && durationMs >= 300;
+    const completedAt = new Date().toISOString();
+    const siamseeStick = state.siamseeStick || randomSiamseeStick();
+    const shakeSession = {
+      status: 'complete',
+      startedAt: recorder.startedAt || completedAt,
+      completedAt,
+      sampleCount: samples.length,
+      durationMs,
+      csvText: valid ? shakeSamplesToCsv(samples) : '',
+      stickNumber: siamseeStick?.stick_number || null,
+    };
+    const nextState = { ...state, shakeSession, siamseeStick };
+    setState?.((current) => ({ ...current, shakeSession, siamseeStick }));
+    startSiamseePrefetch(nextState, shakeSession);
+    return shakeSession;
+  }, [setState, state]);
+
   React.useEffect(() => {
     const handleShake = () => {
       if (!sceneApiRef.current) return;
@@ -1793,12 +1963,24 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
       if (!energy?.isShaking || phase === 'revealed') return;
       const delta = Math.min(4.2, energy.energyDelta ?? energy.kineticEnergy * 0.18);
       if (delta <= 0.02) return;
+      const d = event.detail || {};
+      const sourceTime = finiteNumber(d.t_ms ?? d.timestamp_ms, performance.now());
+      const recorder = shakeRecorderRef.current;
+      if (recorder.startedAtMs == null) {
+        recorder.startedAtMs = sourceTime;
+        recorder.startedAt = new Date().toISOString();
+        recorder.samples = [];
+        recorder.complete = false;
+      }
+      const sample = shakeSampleFromDetection(d, recorder.startedAtMs);
+      if (sample && !recorder.complete) recorder.samples.push(sample);
       lastEnergyAtRef.current = performance.now();
       setIntentEnergy((current) => {
         if (current >= targetEnergy) return current;
         const nextEnergy = Math.min(targetEnergy, current + delta);
         setPhase('shaking');
         if (nextEnergy >= targetEnergy) {
+          finishShakeSession();
           sceneApiRef.current?.revealStick?.();
           playBell();
           setTimeout(() => setPhase('revealed'), 1200);
@@ -1815,7 +1997,7 @@ function ShakeScreen({ state, onContinue, onBack, detail = 'med', vol = 0.5 }) {
       window.removeEventListener(MQTT_DETECTION_EVENT, handleDetection);
       window.removeEventListener(MQTT_STATUS_EVENT, handleStatus);
     };
-  }, [phase, playBell]);
+  }, [finishShakeSession, phase, playBell]);
 
   React.useEffect(() => {
     if (phase === 'revealed') return;
@@ -3143,11 +3325,89 @@ function SentimentMetric({ label, score, highlight = false }) {
     </div>
   );
 }
+
+const SIAMSEE_CONDITION_LABELS = {
+  excited: 'ตื่นตัว',
+  focus: 'โฟกัส',
+  relax: 'สงบ',
+  hesitate: 'ลังเล',
+};
+
+function PersonalSiamseeCard({ fortune, siamsee, status, error, fallbackStick = null }) {
+  const isComplete = status === 'complete' && siamsee?.reading;
+  const isLoading = status === 'loading';
+  const label = SIAMSEE_CONDITION_LABELS[siamsee?.predicted_condition] || 'พื้นฐาน';
+  const stick = siamsee?.siamsee_stick || fallbackStick;
+  const lines = isComplete
+    ? String(siamsee.reading).split('\n').filter(Boolean)
+    : [];
+
+  return (
+    <div className="card card-soft" style={{ padding: 26, transition: 'opacity .35s ease, transform .35s ease' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <div className="eyebrow">{isComplete ? 'คำทำนายเฉพาะคุณ' : 'คำแนะนำ'}</div>
+        <span className="badge" style={{ opacity: isLoading ? 0.65 : 1 }}>
+          {isLoading ? 'กำลังอ่าน...' : `ใบที่ ${stick?.stick_number || '-'} · ${label}`}
+        </span>
+      </div>
+
+      {stick?.title && (
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 500, marginBottom: 10 }}>
+          {stick.title}
+        </div>
+      )}
+
+      {isLoading && (
+        <div style={{ display: 'grid', gap: 10, padding: '4px 0' }}>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} style={{
+              height: 14,
+              width: `${92 - i * 7}%`,
+              borderRadius: 999,
+              background: 'linear-gradient(90deg, rgba(255,255,255,.35), rgba(255,255,255,.75), rgba(255,255,255,.35))',
+              backgroundSize: '200% 100%',
+              animation: 'shimmer 1.2s ease-in-out infinite',
+            }}/>
+          ))}
+        </div>
+      )}
+
+      {isComplete && (
+        <div style={{ display: 'grid', gap: 8, animation: 'float-up .45s cubic-bezier(.3,.7,.4,1.2) both' }}>
+          {lines.map((line, i) => (
+            <p key={i} style={{
+              fontSize: 16,
+              lineHeight: 1.55,
+              fontFamily: 'var(--font-display)',
+              fontWeight: 400,
+              textWrap: 'pretty',
+            }}>
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {!isLoading && !isComplete && (
+        <>
+          <p style={{ fontSize: 17, lineHeight: 1.55, fontFamily: 'var(--font-display)', fontWeight: 400, textWrap: 'pretty' }}>
+            “{fortune.advice}”
+          </p>
+          {(error || status === 'fallback' || status === 'error') && (
+            <p style={{ fontSize: 11, color: 'var(--text-soft)', lineHeight: 1.45, marginTop: 12 }}>
+              ใช้คำทำนายพื้นฐานสำหรับรอบนี้
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 // result.tsx — Phase 4: Fortune stick result
 // Paper-slip oracle card with prediction, advice, reflection question, lucky #.
 
 function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReading }) {
-  const fortune = FORTUNES[state.category] || FORTUNES.work;
+  const baseFortune = FORTUNES[state.category] || FORTUNES.work;
   const cat = CATEGORIES.find(c => c.id === state.category);
   const t = TEMPLES.find(x => x.id === state.temple);
   const IconC = Icon[cat.icon];
@@ -3156,6 +3416,11 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
   const [sentiment, setSentiment] = React.useState(null);
   const [sentimentStatus, setSentimentStatus] = React.useState('idle');
   const [sentimentError, setSentimentError] = React.useState('');
+  const [siamsee, setSiamsee] = React.useState(null);
+  const [siamseeStatus, setSiamseeStatus] = React.useState('idle');
+  const [siamseeError, setSiamseeError] = React.useState('');
+  const displayedSiamseeStick = state.siamseeStick || getSiamseeStick(state.shakeSession?.stickNumber);
+  const fortune = fortuneFromSiamseeStick(displayedSiamseeStick, baseFortune, state.category);
 
   React.useEffect(() => {
     const text = wishText.trim();
@@ -3186,6 +3451,54 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
       clearTimeout(timer);
     };
   }, [wishText]);
+
+  React.useEffect(() => {
+    const palmReading = state?.user?.palmReading;
+    const shakeSession = state?.shakeSession;
+    const stateWithStick = state?.siamseeStick || !shakeSession?.stickNumber
+      ? state
+      : { ...state, siamseeStick: getSiamseeStick(shakeSession.stickNumber) };
+    const key = makeSiamseeCacheKey(stateWithStick, shakeSession);
+    if (!palmReading || !Object.keys(palmReading).length) {
+      setSiamsee(makeFallbackSiamsee('fallback', stateWithStick?.siamseeStick || null));
+      setSiamseeStatus('fallback');
+      setSiamseeError('');
+      return;
+    }
+
+    let cancelled = false;
+    setSiamseeStatus('loading');
+    setSiamseeError('');
+
+    const cached = window.__nimiddSiamseeResult;
+    const entry = cached?.key === key ? cached : startSiamseePrefetch(stateWithStick, shakeSession);
+    const pending = entry?.promise || Promise.resolve(entry?.result || makeFallbackSiamsee('fallback', stateWithStick?.siamseeStick || null));
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) return;
+      setSiamsee(makeFallbackSiamsee('fallback', stateWithStick?.siamseeStick || null));
+      setSiamseeStatus('fallback');
+    }, 12000);
+
+    pending
+      .then((result) => {
+        if (cancelled) return;
+        clearTimeout(timeoutId);
+        setSiamsee(result);
+        setSiamseeStatus(result?.status === 'complete' ? 'complete' : 'fallback');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        clearTimeout(timeoutId);
+        setSiamsee(makeFallbackSiamsee('error', stateWithStick?.siamseeStick || null));
+        setSiamseeStatus('error');
+        setSiamseeError(error?.message || 'อ่านคำทำนายเฉพาะคุณไม่สำเร็จ');
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [state]);
 
   return (
     <AppShell step={3}>
@@ -3247,13 +3560,12 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
                 </div>
               </div>
 
-              {/* Advice card */}
-              <div className="card card-soft" style={{ padding: 26 }}>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>คำแนะนำ</div>
-                <p style={{ fontSize: 17, lineHeight: 1.55, fontFamily: 'var(--font-display)', fontWeight: 400, textWrap: 'pretty' }}>
-                  “{fortune.advice}”
-                </p>
-              </div>
+              <PersonalSiamseeCard
+                fortune={fortune}
+                siamsee={siamsee}
+                status={siamseeStatus}
+                error={siamseeError}
+                fallbackStick={displayedSiamseeStick}/>
 
               {/* Reflection question */}
               <div className="card" style={{ padding: 26, display: 'flex', gap: 18, alignItems: 'flex-start' }}>
@@ -3297,7 +3609,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
 
               {/* Actions */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
-                <button className="btn btn-primary" onClick={() => onSaveReading(sentiment)} style={{ padding: '14px 22px', flex: '1 1 auto' }}>
+                <button className="btn btn-primary" onClick={() => onSaveReading(sentiment, siamsee || makeFallbackSiamsee(siamseeStatus === 'error' ? 'error' : 'fallback', displayedSiamseeStick || null))} style={{ padding: '14px 22px', flex: '1 1 auto' }}>
                   <Icon.bell size={16}/> บันทึกผลเซียมซี
                 </button>
                 <button className="btn btn-secondary" onClick={onDonate} style={{ padding: '14px 22px' }}>
@@ -4519,6 +4831,8 @@ const DEFAULT_RITUAL = {
   box: 'gold',
   category: 'work',
   music: 'bell',
+  shakeSession: null,
+  siamseeStick: null,
 };
 
 const SEASON_PALETTES = {
@@ -4569,7 +4883,7 @@ function PhaseHost({ initialPhase, ritualPatch = {}, focus, loginProps = {} }) {
       onBack={() => setPhase('setup')}/>;
   }
   if (phase === 'shake') {
-    return <ShakeScreen state={ritual}
+    return <ShakeScreen state={ritual} setState={setRitual}
       detail={tweaks.detail} vol={tweaks.musicVol / 100}
       onContinue={() => setPhase('result')}
       onBack={() => setPhase('meditation')}/>;
@@ -5016,7 +5330,7 @@ function OnePageApp() {
         </PhaseStage>
 
         <PhaseStage id="phase-shake" phaseDef={OP_PHASES[3]}>
-          <ShakeScreen state={ritualFor(OP_PHASES[3])}
+          <ShakeScreen state={ritualFor(OP_PHASES[3])} setState={setRitual}
             detail={t.detail} vol={t.musicVol / 100}
             onContinue={() => document.getElementById('phase-result')?.scrollIntoView({ behavior: 'smooth' })}
             onBack={() => document.getElementById('phase-meditation')?.scrollIntoView({ behavior: 'smooth' })}/>
@@ -5122,8 +5436,9 @@ function writeReadingHistory(readings) {
   try { localStorage.setItem(READINGS_STATE_KEY, JSON.stringify(readings)); } catch {}
 }
 
-function makeReadingRecord(ritual, sentiment = null) {
-  const fortune = FORTUNES[ritual.category] || FORTUNES.work;
+function makeReadingRecord(ritual, sentiment = null, siamsee = null) {
+  const baseFortune = FORTUNES[ritual.category] || FORTUNES.work;
+  const fortune = fortuneFromSiamseeStick(ritual.siamseeStick, baseFortune, ritual.category || 'work');
   const record = {
     id: `reading_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     createdAt: new Date().toISOString(),
@@ -5136,6 +5451,7 @@ function makeReadingRecord(ritual, sentiment = null) {
       box: ritual.box || 'gold',
       category: ritual.category || 'work',
       music: ritual.music || 'bell',
+      siamseeStick: ritual.siamseeStick || null,
     },
     fortune: {
       category: ritual.category || 'work',
@@ -5148,11 +5464,12 @@ function makeReadingRecord(ritual, sentiment = null) {
     },
   };
   if (sentiment) record.sentiment = sentiment;
+  if (siamsee) record.siamsee = siamsee;
   return record;
 }
 
-function saveReadingRecord(ritual, sentiment = null) {
-  const record = makeReadingRecord(ritual, sentiment);
+function saveReadingRecord(ritual, sentiment = null, siamsee = null) {
+  const record = makeReadingRecord(ritual, sentiment, siamsee);
   writeReadingHistory([record, ...readReadingHistory()]);
   return record;
 }
@@ -5272,8 +5589,8 @@ function RitualPages() {
   }, [ritual]);
 
   const go = (path) => navigate(path);
-  const saveAndOpenDashboard = async (sentiment = null) => {
-    const record = saveReadingRecord(ritual, sentiment);
+  const saveAndOpenDashboard = async (sentiment = null, siamsee = null) => {
+    const record = saveReadingRecord(ritual, sentiment, siamsee);
     setReadings(readReadingHistory());
     setReadingsSource('local');
     setReadingsError('กำลังบันทึกขึ้นระบบ ข้อมูลล่าสุดอาจยังเป็นข้อมูลบนเครื่องนี้');
@@ -5317,7 +5634,7 @@ function RitualPages() {
         }/>
         <Route path="/shake" element={
           <PageFrame>
-            <ShakeScreen state={ritual} detail={t.detail} vol={t.musicVol / 100}
+            <ShakeScreen state={ritual} setState={setRitual} detail={t.detail} vol={t.musicVol / 100}
               onContinue={() => go('/result')} onBack={() => go('/meditation')}/>
           </PageFrame>
         }/>

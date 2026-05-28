@@ -54,3 +54,10 @@ export function analyzeSentiment(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function generateSiamseeReading(payload) {
+  return apiJson('/api/siamsee-reading', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
