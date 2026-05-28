@@ -68,6 +68,8 @@ web_modules/
 # dotenv environment variable files
 .env
 .env.*
+env.local
+**/env.local
 !.env.example
 
 # parcel-bundler cache (https://parceljs.org/)
@@ -145,4 +147,7 @@ llm-service/src/llm_service/_generated/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
-llm-service/src/llm_service/__pycache__
+
+# Python cache files
+__pycache__/
+*.py[cod]

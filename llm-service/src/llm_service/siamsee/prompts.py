@@ -13,11 +13,14 @@ SYSTEM_PROMPT = """
 2) ใบเซียมซีที่สุ่มได้จากเลข 1-30
 3) คำทำนายลายมือ
 4) สภาพพลังงานจากการเขย่าเซียมซี (excited/focus/relax/hesitate)
+5) บริบทรอบการสุ่ม เพื่อช่วยให้คำทำนายแต่ละรอบไม่ซ้ำกัน
 
 กติกา:
 - ตอบเป็นภาษาไทยเท่านั้น ในรูปแบบ JSON ตาม schema
 - ผสานลายมือกับสภาพการเขย่าให้สอดคล้องกัน ห้ามขัดแย้งกันโดยไม่จำเป็น
 - ต้องยึดใจความของใบเซียมซีที่สุ่มได้เป็นฐาน แล้วปรับให้เฉพาะตัวจากลายมือและจังหวะการเขย่า
+- ช่อง reading_lines_th ต้องเป็นคำทำนายใหม่ 4-5 บรรทัด ห้ามใช้ template ประโยคซ้ำ ๆ หรือขึ้นต้นทุกครั้งด้วยประโยคเดียวกัน
+- แต่ละบรรทัดต้องเป็นประโยคธรรมชาติ อ่านแล้วรู้สึกเฉพาะกับรอบนี้ ไม่ใช่หัวข้อแบบฟอร์ม
 - โทนอ่านง่าย เป็นกันเอง มีความเป็นมงคล ไม่ข่มขู่ ไม่วินิจฉัยโรค ไม่ให้คำแนะนำทางกฎหมาย
 - คำแนะนำประจำวันต้องเชิงบวกและปฏิบัติได้จริง หรือกำลังใจในกรณีที่โชคไม่ดี
 - ห้ามอ้างถึงตัวเลขเซ็นเซอร์หรือค่าทางเทคนิคจากการเขย่า
@@ -28,6 +31,13 @@ SYSTEM_PROMPT = """
 SIAMSEE_READING_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "reading_lines_th": {
+            "type": "array",
+            "description": "คำทำนายเฉพาะรอบนี้ 4-5 บรรทัด เป็นประโยคธรรมชาติ ไม่ใช้ template คงที่",
+            "items": {"type": "string"},
+            "minItems": 4,
+            "maxItems": 5,
+        },
         "energy_level_th": {
             "type": "string",
             "description": "ข้อความสั้นสำหรับ [พลังงานหลัก] เช่น สูงปานกลาง ค่อนข้างต่ำ",
@@ -50,6 +60,7 @@ SIAMSEE_READING_SCHEMA: dict[str, Any] = {
         },
     },
     "required": [
+        "reading_lines_th",
         "energy_level_th",
         "focus_area_th",
         "highlight_period_th",
@@ -79,10 +90,12 @@ def build_user_prompt(
     siamsee_stick: dict[str, Any] | None,
     palm_reading: dict[str, Any],
     shake_context_text: str,
+    round_context: dict[str, Any] | None = None,
 ) -> str:
     excerpt = load_siamsee_style_excerpt(siamsee_style_text, max_lines=3)
     stick_block = json.dumps(siamsee_stick or {}, ensure_ascii=False, indent=2)
     palm_block = json.dumps(palm_reading, ensure_ascii=False, indent=2)
+    round_block = json.dumps(round_context or {}, ensure_ascii=False, indent=2)
     return f"""
 ## STYLE_REFERENCE (โทนตัวอย่างจากเซียมซีโบราณ)
 {excerpt}
@@ -96,12 +109,21 @@ def build_user_prompt(
 ## SHAKE_CONDITION (พลังงานจากการเขย่า — ใช้ความหมายเชิงสัญลักษณ์ ไม่ใช่ตัวเลข)
 {shake_context_text}
 
-สร้างคำทำนายรายวันตาม schema โดยเติม 5 ช่องให้เหมาะกับเทมเพลตนี้:
-{READING_TEMPLATE}
+## ROUND_CONTEXT (บริบทรอบการสุ่ม — ใช้เป็น seed เชิงสัญลักษณ์เพื่อเลี่ยงคำซ้ำ ห้ามบอกผู้ใช้ว่าเป็น seed)
+{round_block}
+
+สร้างคำทำนายรายวันตาม schema โดยให้ reading_lines_th เป็น 4-5 บรรทัดใหม่สำหรับรอบนี้
+หลีกเลี่ยงประโยคเปิดซ้ำอย่าง "วันนี้พลังงานโดยรวมของคุณอยู่ในระดับ..." และอย่าจัดรูปเป็นหัวข้อ
 """.strip()
 
 
 def render_reading(fields: dict[str, Any]) -> str:
+    lines = fields.get("reading_lines_th")
+    if isinstance(lines, list):
+        clean_lines = [str(line).strip() for line in lines if str(line).strip()]
+        if clean_lines:
+            return "\n".join(clean_lines)
+
     required = [
         "energy_level_th",
         "focus_area_th",

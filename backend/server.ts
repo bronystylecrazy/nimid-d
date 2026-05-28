@@ -13,6 +13,8 @@ const mqttShakeTopic = 'v1/shake';
 const mqttDetectionTopic = 'v1/detection';
 const sockets = new Set();
 const appDb = openAppDb();
+const palmReadingJobs = new Map();
+const palmReadingJobTtlMs = 30 * 60 * 1000;
 
 function safeStaticPath(urlPath) {
   const cleanPath = decodeURIComponent(urlPath.split('?')[0] || '/');
@@ -66,6 +68,110 @@ async function proxyPalmReading(req) {
   });
 }
 
+async function postPalmReadingToLlm({ imageBytes, filename, mimeType, dryRun }) {
+  const formData = new FormData();
+  formData.append('image', new Blob([imageBytes], { type: mimeType || 'image/jpeg' }), filename || 'palm.jpg');
+  formData.append('dry_run', dryRun ? 'true' : 'false');
+
+  const response = await fetch(`${llmServiceUrl}/palm-reading`, {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail || payload?.message || `Palm reading failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function palmReadingJobSnapshot(job) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    dryRun: job.dryRun,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    result: job.result || null,
+    error: job.error || '',
+  };
+}
+
+function cleanupPalmReadingJobs() {
+  const cutoff = Date.now() - palmReadingJobTtlMs;
+  for (const [jobId, job] of palmReadingJobs) {
+    if (Date.parse(job.updatedAt || job.createdAt) < cutoff) palmReadingJobs.delete(jobId);
+  }
+}
+
+function updatePalmReadingJob(job, patch) {
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+  broadcast({
+    type: 'palm-reading-job',
+    topic: `palm-reading/jobs/${job.id}`,
+    data: palmReadingJobSnapshot(job),
+    at: new Date().toISOString(),
+  });
+}
+
+function runPalmReadingJob(job) {
+  queueMicrotask(async () => {
+    updatePalmReadingJob(job, { status: 'running' });
+    try {
+      const result = await postPalmReadingToLlm(job.input);
+      updatePalmReadingJob(job, { status: 'complete', result, error: '' });
+    } catch (error) {
+      updatePalmReadingJob(job, {
+        status: 'error',
+        error: error?.message || 'อ่านลายมือไม่สำเร็จ',
+      });
+    } finally {
+      cleanupPalmReadingJobs();
+    }
+  });
+}
+
+async function createPalmReadingJob(req) {
+  let formData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return jsonResponse({ message: 'multipart form-data is required' }, { status: 400 });
+  }
+  const image = formData.get('image');
+  if (!image || typeof image === 'string' || typeof image.arrayBuffer !== 'function') {
+    return jsonResponse({ message: 'image is required' }, { status: 400 });
+  }
+
+  const id = `palm_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const dryRun = String(formData.get('dry_run') || 'false') === 'true';
+  const createdAt = new Date().toISOString();
+  const job = {
+    id,
+    status: 'queued',
+    dryRun,
+    createdAt,
+    updatedAt: createdAt,
+    result: null,
+    error: '',
+    input: {
+      imageBytes: await image.arrayBuffer(),
+      filename: image.name || 'palm.jpg',
+      mimeType: image.type || 'image/jpeg',
+      dryRun,
+    },
+  };
+  palmReadingJobs.set(id, job);
+  runPalmReadingJob(job);
+  return jsonResponse(palmReadingJobSnapshot(job), { status: 202 });
+}
+
+function getPalmReadingJob(pathname) {
+  const match = /^\/api\/palm-reading\/jobs\/([^/]+)$/.exec(pathname);
+  if (!match) return null;
+  cleanupPalmReadingJobs();
+  return palmReadingJobs.get(decodeURIComponent(match[1])) || null;
+}
+
 async function proxySentiment(req) {
   const response = await fetch(`${llmServiceUrl}/sentiment`, {
     method: 'POST',
@@ -114,6 +220,18 @@ async function readJson(req) {
 
 async function handleApi(req) {
   const url = new URL(req.url);
+
+  if (url.pathname === '/api/palm-reading/jobs') {
+    if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+    return createPalmReadingJob(req);
+  }
+
+  if (url.pathname.startsWith('/api/palm-reading/jobs/')) {
+    if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 });
+    const job = getPalmReadingJob(url.pathname);
+    if (!job) return jsonResponse({ message: 'Palm reading job not found' }, { status: 404 });
+    return jsonResponse(palmReadingJobSnapshot(job));
+  }
 
   if (url.pathname.startsWith('/api/uploads/')) {
     if (req.method !== 'GET') return new Response('Method not allowed', { status: 405 });

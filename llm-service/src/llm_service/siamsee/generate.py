@@ -130,6 +130,7 @@ def generate_siamsee_reading(
     condition: dict[str, Any] | None = None,
     stick_number: int | None = None,
     siamsee_stick: dict[str, Any] | None = None,
+    round_context: dict[str, Any] | None = None,
     env_file: Path | None = None,
     model: str | None = None,
     dry_run: bool = False,
@@ -153,12 +154,20 @@ def generate_siamsee_reading(
         siamsee_stick=resolved_stick,
         palm_reading=palm_reading,
         shake_context_text=format_context_for_prompt(compact),
+        round_context=round_context,
     )
     resolved_model = model or os.getenv("OPENAI_SIAMSEE_MODEL") or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
     payload = build_api_payload(user_prompt, resolved_model)
 
     if dry_run:
         fields = {
+            "reading_lines_th": [
+                "จังหวะของรอบนี้ชี้ว่าคุณกำลังค่อย ๆ กลับมายืนบนฐานที่มั่นคงขึ้น",
+                "ใบเซียมซีหนุนให้เลือกเรื่องสำคัญเพียงหนึ่งเรื่อง แล้วให้เวลากับมันอย่างจริงใจ",
+                "ลายมือบอกว่าความคิดละเอียดของคุณจะช่วยแยกเรื่องเร่งด่วนออกจากเรื่องที่รอได้",
+                "ช่วงบ่ายถึงเย็นเหมาะกับการทบทวนคำตอบก่อนตัดสินใจครั้งเล็ก ๆ",
+                "วันนี้ให้เริ่มจากก้าวที่ทำได้จริง แล้วปล่อยให้ความมั่นใจตามมาทีหลัง",
+            ],
             "energy_level_th": "กำลังดีและค่อย ๆ มั่นคง",
             "focus_area_th": "การงานและจังหวะการตัดสินใจ",
             "highlight_period_th": "ช่วงบ่ายถึงเย็น",

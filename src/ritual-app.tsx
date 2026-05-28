@@ -100,6 +100,23 @@ const PALM_LINES = [
   },
 ];
 
+const PALM_READING_EVENT = 'nimidd:palm-reading';
+const PALM_READING_PENDING_STATUSES = new Set(['queued', 'running', 'loading', 'preprocessing']);
+
+function isPalmReadingPending(user) {
+  return PALM_READING_PENDING_STATUSES.has(String(user?.palmReadingStatus || ''));
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError';
+}
+
+function makeAbortError() {
+  const error = new Error('Request cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
 // simple string-hash so the reading stays the same for a given user
 function __palmHash(s) {
   let h = 0;
@@ -107,6 +124,15 @@ function __palmHash(s) {
   return Math.abs(h);
 }
 function analyzePalm(user) {
+  if (isPalmReadingPending(user)) {
+    return PALM_LINES.map((line) => ({
+      ...line,
+      reading: {
+        tone: 'กำลังอ่านลายมือ',
+        text: 'ระบบกำลังแยกเส้นลายมือและอ่านผลให้ละเอียด คุณเดินพิธีต่อได้ ระหว่างนี้คำอ่านจะอัปเดตเองเมื่อเสร็จ',
+      },
+    }));
+  }
   if (user?.palmReading && Object.keys(user.palmReading).length > 0) return palmReadingFromLlm(user.palmReading);
   const seed = __palmHash((user?.name || '') + '|' + (user?.dob || ''));
   return PALM_LINES.map((L, i) => {
@@ -131,13 +157,21 @@ function palmReadingFromLlm(palmReading) {
   }));
 }
 
-async function dataUrlToBlob(dataUrl) {
-  const response = await fetch(dataUrl);
+async function dataUrlToBlob(dataUrl, signal = null) {
+  const response = await fetch(dataUrl, signal ? { signal } : undefined);
   return response.blob();
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal = null) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(makeAbortError());
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => {
+      window.clearTimeout(timer);
+      reject(makeAbortError());
+    }, { once: true });
+  });
 }
 
 function stableHash(value) {
@@ -155,9 +189,20 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function detectionAccelEuclidean(data) {
+  return finiteNumber(
+    data?.accel_euclidean_g
+      ?? data?.accel_eclidean_g
+      ?? data?.accel_euclidean
+      ?? data?.accel_eclidean
+      ?? data?.linear_accel_magnitude_g,
+    NaN,
+  );
+}
+
 function shakeSampleFromDetection(data, startAtMs) {
   const sourceTime = finiteNumber(data?.t_ms ?? data?.timestamp_ms, performance.now());
-  const accel = data?.linear_accel_magnitude_g ?? data?.accel_euclidean_g;
+  const accel = data?.linear_accel_magnitude_g ?? detectionAccelEuclidean(data);
   const gyro = data?.gyro_magnitude_dps ?? Math.hypot(
     finiteNumber(data?.gyro_x_dps),
     finiteNumber(data?.gyro_y_dps),
@@ -218,8 +263,61 @@ function randomSiamseeStick() {
   return fallback || SIAMSEE_STICKS[Math.floor(Math.random() * SIAMSEE_STICKS.length)];
 }
 
-function fortuneFromSiamseeStick(stick, fallback, category) {
+const THAI_DIGITS = {
+  '๐': '0',
+  '๑': '1',
+  '๒': '2',
+  '๓': '3',
+  '๔': '4',
+  '๕': '5',
+  '๖': '6',
+  '๗': '7',
+  '๘': '8',
+  '๙': '9',
+};
+
+function normalizeFortuneNumber(value) {
+  const normalized = String(value ?? '')
+    .replace(/[๐-๙]/g, digit => THAI_DIGITS[digit] || digit)
+    .replace(/\D/g, '');
+  return normalized ? Number(normalized) : null;
+}
+
+function randomLuckyNumberForStick(stickNumber, previousLuckyNumber = null) {
+  const excluded = new Set([
+    normalizeFortuneNumber(stickNumber),
+    normalizeFortuneNumber(previousLuckyNumber),
+  ].filter(value => value != null));
+  let luckyNumber = Math.floor(Math.random() * 99) + 1;
+  while (excluded.has(luckyNumber)) {
+    luckyNumber = (luckyNumber % 99) + 1;
+  }
+  return String(luckyNumber);
+}
+
+function luckyNumbersForStick(stickNumber, explicitLuckyNumber = null, fallbackLuck = [], fallbackNum = '') {
+  const drawnNumber = normalizeFortuneNumber(stickNumber);
+  const explicitNumber = normalizeFortuneNumber(explicitLuckyNumber);
+  if (explicitNumber != null && explicitNumber !== drawnNumber) {
+    return [String(explicitLuckyNumber)];
+  }
+
+  const candidates = Array.isArray(fallbackLuck) ? fallbackLuck : [fallbackLuck];
+  const lucky = candidates.find(candidate => {
+    const candidateNumber = normalizeFortuneNumber(candidate);
+    return candidateNumber != null && candidateNumber !== drawnNumber;
+  });
+  if (lucky != null) return [String(lucky)];
+
+  const seed = drawnNumber || normalizeFortuneNumber(fallbackNum) || 1;
+  let generated = ((seed * 7 + 13) % 99) + 1;
+  if (generated === drawnNumber) generated = (generated % 99) + 1;
+  return [String(generated)];
+}
+
+function fortuneFromSiamseeStick(stick, fallback, category, luckyNumber = null) {
   if (!stick) return fallback;
+  const stickNumber = stick.stick_number || fallback.num;
   const categoryText = category === 'love'
     ? stick.love
     : category === 'work'
@@ -230,11 +328,11 @@ function fortuneFromSiamseeStick(stick, fallback, category) {
   return {
     ...fallback,
     category,
-    num: String(stick.stick_number || fallback.num),
+    num: String(stickNumber),
     title: stick.title || fallback.title,
     text: categoryText || stick.overall || fallback.text,
     advice: stick.advice || fallback.advice,
-    luck: [String(stick.stick_number || fallback.luck?.[0] || fallback.num)],
+    luck: luckyNumbersForStick(stickNumber, luckyNumber, fallback.luck, fallback.num),
   };
 }
 
@@ -245,6 +343,8 @@ function makeSiamseeCacheKey(state, shakeSession) {
     stableHash(state?.user?.palmReading || {}),
     shakeSession?.durationMs || 0,
     shakeSession?.sampleCount || 0,
+    shakeSession?.completedAt || '',
+    state?.luckyNumber || shakeSession?.luckyNumber || '',
     state?.category || 'work',
     state?.siamseeStick?.stick_number || shakeSession?.stickNumber || 0,
   ].join(':');
@@ -266,6 +366,12 @@ function startSiamseePrefetch(state, shakeSession) {
     condition: shakeSession?.csvText ? null : { predicted_condition: 'focus', confidence: 0, distances: {} },
     stick_number: state?.siamseeStick?.stick_number || shakeSession?.stickNumber || null,
     siamsee_stick: state?.siamseeStick || null,
+    round_context: {
+      completed_at: shakeSession?.completedAt || '',
+      lucky_number: state?.luckyNumber || shakeSession?.luckyNumber || '',
+      category: state?.category || 'work',
+      cache_key: key,
+    },
   };
   const entry = { key, status: 'loading', promise: null, result: null, error: null };
   entry.promise = generateSiamseeReading(payload)
@@ -284,54 +390,290 @@ function startSiamseePrefetch(state, shakeSession) {
   return entry;
 }
 
-function waitForPaint() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(resolve));
-  });
-}
-
-function decodeImage(src) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve();
-    img.onerror = () => resolve();
-    img.src = src;
-    if (img.decode) img.decode().then(resolve).catch(resolve);
-  });
-}
-
-async function postPalmReading(palmDataUrl, { dryRun = false } = {}) {
-  const blob = await dataUrlToBlob(palmDataUrl);
-  const formData = new FormData();
-  formData.append('image', blob, 'palm.jpg');
-  formData.append('dry_run', dryRun ? 'true' : 'false');
-  const response = await fetch('/api/palm-reading', {
-    method: 'POST',
-    body: formData,
-  });
+async function readApiPayload(response) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload?.detail || payload?.message || 'อ่านลายมือไม่สำเร็จ');
+    throw new Error(payload?.detail || payload?.message || `Request failed: ${response.status}`);
   }
   return payload;
 }
 
-async function requestPalmReading(palmDataUrl, { onPanel } = {}) {
+async function createPalmReadingJob(palmDataUrl, { dryRun = false, signal = null } = {}) {
+  const blob = await dataUrlToBlob(palmDataUrl, signal);
+  const formData = new FormData();
+  formData.append('image', blob, 'palm.jpg');
+  formData.append('dry_run', dryRun ? 'true' : 'false');
+  const response = await fetch('/api/palm-reading/jobs', {
+    method: 'POST',
+    body: formData,
+    signal,
+  });
+  return readApiPayload(response);
+}
+
+async function getPalmReadingJob(jobId, { signal = null } = {}) {
+  const response = await fetch(`/api/palm-reading/jobs/${encodeURIComponent(jobId)}`, {
+    method: 'GET',
+    signal,
+  });
+  return readApiPayload(response);
+}
+
+async function waitForPalmReadingJob(jobId, { signal = null, onJob, timeoutMs = 180000 } = {}) {
+  const startedAt = Date.now();
+  while (true) {
+    if (signal?.aborted) throw makeAbortError();
+    const job = await getPalmReadingJob(jobId, { signal });
+    onJob?.(job);
+    if (job.status === 'complete') return job.result;
+    if (job.status === 'error') throw new Error(job.error || 'อ่านลายมือไม่สำเร็จ');
+    if (Date.now() - startedAt > timeoutMs) throw new Error('อ่านลายมือใช้เวลานานเกินไป');
+    await sleep(900, signal);
+  }
+}
+
+async function postPalmReading(palmDataUrl, { dryRun = false, signal = null, onJob } = {}) {
+  const job = await createPalmReadingJob(palmDataUrl, { dryRun, signal });
+  onJob?.(job);
+  return waitForPalmReadingJob(job.jobId, { signal, onJob });
+}
+
+async function requestPalmReading(palmDataUrl, { onPanel, signal, onJob } = {}) {
   let preview = null;
   try {
-    preview = await postPalmReading(palmDataUrl, { dryRun: true });
+    preview = await postPalmReading(palmDataUrl, { dryRun: true, signal, onJob });
     if (preview?.llm_panel_png_base64) {
       await onPanel?.(`data:image/png;base64,${preview.llm_panel_png_base64}`, preview);
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     console.warn('palm preprocessing preview failed', error);
   }
 
-  const result = await postPalmReading(palmDataUrl, { dryRun: false });
+  const result = await postPalmReading(palmDataUrl, { dryRun: false, signal, onJob });
   if (!result.llm_panel_png_base64 && preview?.llm_panel_png_base64) {
     result.llm_panel_png_base64 = preview.llm_panel_png_base64;
   }
   return result;
+}
+
+function palmReadingKeyFor(user) {
+  return stableHash(`${user?.name || ''}|${user?.palm || ''}`);
+}
+
+function palmReadingPatchFromResult(result) {
+  const panelUrl = result?.llm_panel_png_base64
+    ? `data:image/png;base64,${result.llm_panel_png_base64}`
+    : null;
+  return {
+    palmReading: result?.reading || null,
+    palmReadingStatus: result?.status === 'complete' ? 'complete' : (result?.status || 'fallback'),
+    palmReadingManifest: result?.manifest || null,
+    palmReadingPanel: panelUrl,
+    palmReadingError: '',
+  };
+}
+
+function emitPalmReadingPatch(key, patch) {
+  window.dispatchEvent(new CustomEvent(PALM_READING_EVENT, { detail: { key, patch } }));
+}
+
+function startPalmReadingInBackground(user) {
+  const key = user.palmReadingKey || palmReadingKeyFor(user);
+  const existing = window.__nimiddPalmReadingJob;
+  if (existing?.key === key && existing.status === 'loading') return existing;
+
+  const controller = new AbortController();
+  const entry = { key, status: 'loading', controller };
+  entry.previewPromise = new Promise((resolve) => { entry.resolvePreview = resolve; });
+  window.__nimiddPalmReadingJob = entry;
+
+  requestPalmReading(user.palm, {
+    signal: controller.signal,
+    onJob: (job) => {
+      if (job.status === 'complete') return;
+      const status = job.status || 'loading';
+      const marker = `${job.jobId}:${status}`;
+      if (entry.lastJobMarker === marker) return;
+      entry.lastJobMarker = marker;
+      emitPalmReadingPatch(key, {
+        palmReadingJobId: job.jobId,
+        palmReadingStatus: status,
+      });
+    },
+    onPanel: (panelUrl, preview) => {
+      entry.previewPanelUrl = panelUrl;
+      entry.resolvePreview?.({ panelUrl, preview });
+      emitPalmReadingPatch(key, {
+        palmReadingStatus: 'preprocessing',
+        palmReadingPanel: panelUrl,
+        palmReadingPreviewManifest: preview?.manifest || null,
+        palmReadingError: '',
+      });
+    },
+  })
+    .then((result) => {
+      entry.status = 'complete';
+      entry.finalPatch = palmReadingPatchFromResult(result);
+      emitPalmReadingPatch(key, entry.finalPatch);
+    })
+    .catch((error) => {
+      if (isAbortError(error)) return;
+      entry.status = 'error';
+      entry.resolvePreview?.(null);
+      entry.finalPatch = {
+        palmReadingStatus: 'error',
+        palmReadingError: error?.message || 'ยังเชื่อมต่อระบบอ่านลายมือไม่ได้ จะใช้คำอ่านพื้นฐานแทน',
+      };
+      emitPalmReadingPatch(key, entry.finalPatch);
+    });
+
+  return entry;
+}
+
+function persistUserSnapshot(user) {
+  try { localStorage.setItem(LS_USER_KEY, JSON.stringify(user)); } catch {}
+}
+
+function usePalmReadingEvents(ritual, setRitual) {
+  const ritualRef = React.useRef(ritual);
+  React.useEffect(() => { ritualRef.current = ritual; }, [ritual]);
+
+  React.useEffect(() => {
+    const handlePalmReading = (event) => {
+      const { key, patch } = event.detail || {};
+      const current = ritualRef.current;
+      if (!key || !patch || current?.user?.palmReadingKey !== key) return;
+      const nextUser = { ...current.user, ...patch };
+      const nextRitual = { ...current, user: nextUser };
+      setRitual(nextRitual);
+      persistUserSnapshot(nextUser);
+      saveSessionUser(nextUser, nextRitual).catch(() => {});
+    };
+    window.addEventListener(PALM_READING_EVENT, handlePalmReading);
+    return () => window.removeEventListener(PALM_READING_EVENT, handlePalmReading);
+  }, [setRitual]);
+}
+
+function usePendingPalmReading(ritual) {
+  const user = ritual?.user;
+  React.useEffect(() => {
+    if (!user?.palm || !user?.palmReadingKey || !isPalmReadingPending(user)) return;
+    const active = window.__nimiddPalmReadingJob;
+    if (active?.key === user.palmReadingKey && active.status === 'loading') return;
+    startPalmReadingInBackground(user);
+  }, [user?.palm, user?.palmReadingKey, user?.palmReadingStatus]);
+}
+
+function PalmReadingToastHost() {
+  const [toast, setToast] = React.useState(null);
+  const seenRef = React.useRef(new Set());
+
+  React.useEffect(() => {
+    const handlePalmReading = (event) => {
+      const { key, patch } = event.detail || {};
+      const status = patch?.palmReadingStatus;
+      if (!key || !['complete', 'error'].includes(status)) return;
+
+      const id = [
+        key,
+        status,
+        patch.palmReadingJobId || patch.palmReadingManifest?.output_dir || Date.now(),
+      ].join(':');
+      if (seenRef.current.has(id)) return;
+      seenRef.current.add(id);
+
+      setToast(status === 'complete'
+        ? {
+            id,
+            tone: 'success',
+            title: 'อ่านลายมือเสร็จแล้ว',
+            message: 'คำอ่านลายมือพร้อมแล้ว และจะอัปเดตในพิธีให้อัตโนมัติ',
+          }
+        : {
+            id,
+            tone: 'error',
+            title: 'อ่านลายมือไม่สำเร็จ',
+            message: patch.palmReadingError || 'ระบบจะใช้คำอ่านพื้นฐานให้ก่อน คุณลองใหม่ได้ภายหลัง',
+          });
+    };
+    window.addEventListener(PALM_READING_EVENT, handlePalmReading);
+    return () => window.removeEventListener(PALM_READING_EVENT, handlePalmReading);
+  }, []);
+
+  React.useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 5200);
+    return () => window.clearTimeout(timer);
+  }, [toast?.id]);
+
+  if (!toast) return null;
+
+  const isSuccess = toast.tone === 'success';
+  return (
+    <div
+      role={isSuccess ? 'status' : 'alert'}
+      aria-live={isSuccess ? 'polite' : 'assertive'}
+      style={{
+        position: 'fixed',
+        right: 24,
+        bottom: 24,
+        zIndex: 1000,
+        width: 'min(360px, calc(100vw - 32px))',
+        padding: 16,
+        borderRadius: 18,
+        background: 'rgba(255,255,255,.92)',
+        color: 'var(--text-main)',
+        boxShadow: '0 18px 50px rgba(61,46,42,.18), 0 1px 0 rgba(255,255,255,.8) inset',
+        border: `1px solid ${isSuccess ? 'rgba(135,181,158,.35)' : 'rgba(217,122,108,.35)'}`,
+        backdropFilter: 'blur(18px) saturate(160%)',
+        WebkitBackdropFilter: 'blur(18px) saturate(160%)',
+        display: 'grid',
+        gridTemplateColumns: '36px 1fr auto',
+        gap: 12,
+        alignItems: 'start',
+        animation: 'float-up .28s cubic-bezier(.3,.7,.4,1.4) both',
+      }}>
+      <div style={{
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        background: isSuccess ? 'rgba(184,216,200,.42)' : 'rgba(217,122,108,.16)',
+        color: isSuccess ? 'var(--c-mint-deep)' : 'var(--c-coral)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        {isSuccess ? <Icon.check size={18} sw={2.4}/> : <Icon.refresh size={18} sw={2}/>}
+      </div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
+          {toast.title}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+          {toast.message}
+        </div>
+      </div>
+      <button
+        type="button"
+        aria-label="ปิดแจ้งเตือน"
+        onClick={() => setToast(null)}
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 999,
+          border: 'none',
+          background: 'var(--surface-soft)',
+          color: 'var(--text-muted)',
+          fontSize: 18,
+          lineHeight: 1,
+          cursor: 'pointer',
+          fontFamily: 'var(--font-body)',
+        }}>
+        ×
+      </button>
+    </div>
+  );
 }
 
 function LoginScreen({ onContinue, initial = {} }) {
@@ -366,15 +708,30 @@ function LoginScreen({ onContinue, initial = {} }) {
   if (savedUser && !initial.forceRegister) {
     return <WelcomeBack user={savedUser} onContinue={onContinue} onForget={forgetUser}/>;
   }
-  return <RegisterForm initial={initial} onContinue={async (u) => {
-    let user = u;
-    try {
-      const saved = await saveSessionUser(u);
-      user = saved.user || u;
-    } catch {}
-    try { localStorage.setItem(LS_USER_KEY, JSON.stringify(user)); } catch {}
-    setSavedUser(user);
-    onContinue(user);
+  return <RegisterForm initial={initial} onContinue={(u) => {
+    persistUserSnapshot(u);
+    setSavedUser(u);
+    onContinue(u);
+    saveSessionUser(u)
+      .then((saved) => {
+        const savedUser = saved.user || {};
+        const savedPatch = {};
+        if (savedUser.id) savedPatch.id = savedUser.id;
+        if (savedUser.palm) savedPatch.palm = savedUser.palm;
+        if (savedUser.palmImageMime) savedPatch.palmImageMime = savedUser.palmImageMime;
+        if (savedUser.createdAt) savedPatch.createdAt = savedUser.createdAt;
+        if (savedUser.updatedAt) savedPatch.updatedAt = savedUser.updatedAt;
+        if (savedUser.lastSeenAt) savedPatch.lastSeenAt = savedUser.lastSeenAt;
+        setSavedUser((current) => ({ ...(current || u), ...savedPatch }));
+        try {
+          const current = JSON.parse(localStorage.getItem(LS_USER_KEY) || 'null') || u;
+          persistUserSnapshot({ ...current, ...savedPatch });
+        } catch {
+          persistUserSnapshot({ ...u, ...savedPatch });
+        }
+        if (u.palmReadingKey) emitPalmReadingPatch(u.palmReadingKey, savedPatch);
+      })
+      .catch(() => {});
   }}/>;
 }
 window.LoginScreen = LoginScreen;
@@ -389,7 +746,7 @@ function RegisterForm({ onContinue, initial = {} }) {
   const [readingError, setReadingError] = React.useState('');
   const [palmProcessingPanel, setPalmProcessingPanel] = React.useState(null);
   const ready = name.trim().length >= 2 && palm;
-  const analyzing = readingStatus === 'loading';
+  const analyzing = ['loading', 'preprocessing'].includes(readingStatus);
 
   const updatePalm = (nextPalm) => {
     setPalm(nextPalm);
@@ -400,37 +757,31 @@ function RegisterForm({ onContinue, initial = {} }) {
 
   const continueWithPalmReading = async () => {
     if (!ready || analyzing) return;
-    const user = { name: name.trim(), palm };
+    const palmReadingKey = palmReadingKeyFor({ name: name.trim(), palm });
+    const user = { name: name.trim(), palm, palmReadingStatus: 'loading', palmReadingKey };
     setReadingStatus('loading');
     setReadingError('');
     setPalmProcessingPanel(null);
-    try {
-      const result = await requestPalmReading(palm, {
-        onPanel: async (panelUrl) => {
-          setPalmProcessingPanel(panelUrl);
-          await decodeImage(panelUrl);
-          await waitForPaint();
-          await sleep(900);
-        },
-      });
-      const panelUrl = result.llm_panel_png_base64
-        ? `data:image/png;base64,${result.llm_panel_png_base64}`
-        : null;
-      setPalmProcessingPanel(panelUrl);
-      const nextUser = {
+    const entry = startPalmReadingInBackground(user);
+    let nextUser = user;
+    const preview = await Promise.race([
+      entry?.previewPromise || Promise.resolve(null),
+      sleep(8000).then(() => null),
+    ]);
+    if (preview?.panelUrl) {
+      setReadingStatus('preprocessing');
+      setPalmProcessingPanel(preview.panelUrl);
+      nextUser = {
         ...user,
-        palmReading: result.reading,
-        palmReadingStatus: result.status,
-        palmReadingManifest: result.manifest,
-        palmReadingPanel: panelUrl,
+        palmReadingStatus: 'preprocessing',
+        palmReadingPanel: preview.panelUrl,
+        palmReadingPreviewManifest: preview.preview?.manifest || null,
       };
-      setReadingStatus(result.status === 'complete' ? 'complete' : 'fallback');
-      if (panelUrl) await sleep(1200);
-      onContinue(nextUser);
-    } catch (error) {
-      setReadingStatus('error');
-      setReadingError(error?.message || 'ยังเชื่อมต่อระบบอ่านลายมือไม่ได้ จะใช้คำอ่านพื้นฐานแทน');
-      onContinue({ ...user, palmReadingStatus: 'error' });
+      await sleep(2000);
+    }
+    onContinue(nextUser);
+    if (entry?.finalPatch) {
+      window.setTimeout(() => emitPalmReadingPatch(palmReadingKey, entry.finalPatch), 0);
     }
   };
 
@@ -530,7 +881,6 @@ function RegisterForm({ onContinue, initial = {} }) {
 
             {(palm && (analyzing || palmProcessingPanel)) && (
               <PalmProcessingPreview
-                palm={palm}
                 panel={palmProcessingPanel}
                 status={readingStatus}/>
             )}
@@ -539,7 +889,7 @@ function RegisterForm({ onContinue, initial = {} }) {
               onClick={continueWithPalmReading}
               style={{ width: '100%', marginTop: 22, padding: '16px 22px',
                 borderRadius: 18, justifyContent: 'space-between' }}>
-              <span>{analyzing ? 'กำลังอ่านลายมือ...' : 'อ่านลายมือของฉัน'}</span>
+              <span>{readingStatus === 'preprocessing' ? 'กำลังแสดงผล OpenCV...' : analyzing ? 'กำลังอ่านลายมือ...' : 'อ่านลายมือของฉัน'}</span>
               {analyzing ? <Icon.sparkle size={18}/> : <Icon.arrowR size={18}/>}
             </button>
 
@@ -584,7 +934,7 @@ function Field({ label, hint, children }) {
   );
 }
 
-function PalmProcessingPreview({ palm, panel, status }) {
+function PalmProcessingPreview({ panel, status }) {
   const done = Boolean(panel);
   const statusText = done
     ? (status === 'complete' ? 'ประมวลผลและอ่านลายมือสำเร็จ' : 'ประมวลผลภาพสำเร็จ กำลังรอคำอ่านจาก LLM')
@@ -614,31 +964,24 @@ function PalmProcessingPreview({ palm, panel, status }) {
         </span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, .8fr) minmax(0, 1.2fr)', gap: 12 }}>
-        <ProcessingFrame label="ภาพต้นฉบับ" active={!done}>
-          <img src={palm} alt="palm input" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-          {!done && <ScanOverlay/>}
-        </ProcessingFrame>
-
-        <ProcessingFrame label="OpenCV panel" active={!done}>
-          {panel ? (
-            <img src={panel} alt="opencv palm processing panel" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#121212' }}/>
-          ) : (
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: 'grid', gridTemplateRows: '1fr 1fr', gap: 8,
-              padding: 12, background: '#151313',
-            }}>
-              <ProcessingSkeleton title="palm crop"/>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
-                <ProcessingSkeleton title="contrast" small/>
-                <ProcessingSkeleton title="lines" small/>
-                <ProcessingSkeleton title="mask" small/>
-              </div>
+      <ProcessingFrame label="OpenCV Processing" active={!done}>
+        {panel ? (
+          <img src={panel} alt="opencv palm processing panel" style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#121212' }}/>
+        ) : (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'grid', gridTemplateRows: '1fr 1fr', gap: 8,
+            padding: 12, background: '#151313',
+          }}>
+            <ProcessingSkeleton title="palm crop"/>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+              <ProcessingSkeleton title="contrast" small/>
+              <ProcessingSkeleton title="lines" small/>
+              <ProcessingSkeleton title="mask" small/>
             </div>
-          )}
-        </ProcessingFrame>
-      </div>
+          </div>
+        )}
+      </ProcessingFrame>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         {['crop', 'contrast', 'line response', 'mask'].map((step, index) => (
@@ -685,25 +1028,6 @@ function ProcessingFrame({ label, active, children }) {
         {label}
       </div>
     </div>
-  );
-}
-
-function ScanOverlay() {
-  return (
-    <>
-      <div style={{
-        position: 'absolute', inset: 0,
-        background: 'linear-gradient(180deg, transparent, rgba(184,216,200,.18), transparent)',
-        animation: 'scan-y 1.25s ease-in-out infinite',
-        mixBlendMode: 'screen',
-      }}/>
-      <div style={{
-        position: 'absolute', inset: 0,
-        backgroundImage: 'linear-gradient(rgba(255,255,255,.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px)',
-        backgroundSize: '18px 18px',
-        opacity: .35,
-      }}/>
-    </>
   );
 }
 
@@ -959,7 +1283,16 @@ function PalmIcon({ active }) {
 // ─────────────────────────────────────────────
 function WelcomeBack({ user, onContinue, onForget }) {
   const reading = React.useMemo(() => analyzePalm(user), [user]);
-  const palmConclusion = user?.palmReading?.conclusion || fallbackPalmConclusion(user);
+  const pendingPalmReading = isPalmReadingPending(user);
+  const failedPalmReading = user?.palmReadingStatus === 'error';
+  const palmConclusion = pendingPalmReading
+    ? 'กำลังอ่านลายมือของคุณอยู่เบื้องหลัง คุณสามารถเริ่มพิธีต่อได้ทันที เมื่อผลเสร็จแล้วคำอ่านทั้งสามเส้นจะอัปเดตเอง'
+    : user?.palmReading?.conclusion || fallbackPalmConclusion(user);
+  const palmStatusLabel = pendingPalmReading
+    ? 'กำลังอ่าน'
+    : failedPalmReading
+      ? 'ใช้คำอ่านพื้นฐาน'
+      : 'วิเคราะห์แล้ว';
   // Format date for display (Thai locale)
   const dobLabel = React.useMemo(() => {
     if (!user.dob) return '';
@@ -1029,7 +1362,7 @@ function WelcomeBack({ user, onContinue, onForget }) {
                   fontSize: 10, fontWeight: 500, letterSpacing: '.04em',
                   display: 'inline-flex', alignItems: 'center', gap: 4,
                 }}>
-                  <Icon.sparkle size={10}/> วิเคราะห์แล้ว
+                  <Icon.sparkle size={10}/> {palmStatusLabel}
                 </div>
               </div>
               <div style={{ textAlign: 'center' }}>
@@ -1049,7 +1382,9 @@ function WelcomeBack({ user, onContinue, onForget }) {
                 }}>คุณ{user.name}</span>
               </h1>
               <p style={{ fontSize: 16, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 560 }}>
-                เราได้อ่านลายมือของคุณจากครั้งก่อนแล้ว ทั้ง ๓ เส้นด้านล่างคือสิ่งที่ลายมือของคุณกำลังบอกในช่วงเวลานี้
+                {pendingPalmReading
+                  ? 'ระบบกำลังอ่านลายมือของคุณอยู่เบื้องหลัง ระหว่างนี้คุณเริ่มพิธีต่อได้เลย'
+                  : 'เราได้อ่านลายมือของคุณจากครั้งก่อนแล้ว ทั้ง ๓ เส้นด้านล่างคือสิ่งที่ลายมือของคุณกำลังบอกในช่วงเวลานี้'}
               </p>
             </div>
 
@@ -1733,7 +2068,7 @@ function MeditationScreen({ state, onContinue, onBack }) {
                 style={{ padding: '12px 22px' }}>
                 {running ? <><Icon.pause size={14}/> หยุดชั่วคราว</> : <><Icon.play size={14}/> ทำต่อ</>}
               </button>
-              <button className="btn btn-primary" onClick={onContinue} disabled={!done}
+              <button className="btn btn-primary" onClick={onContinue}
                 style={{ marginLeft: 'auto', padding: '14px 28px' }}>
                 ไปยังจุดเสี่ยงเซียมซี <Icon.arrowR size={16}/>
               </button>
@@ -1741,7 +2076,7 @@ function MeditationScreen({ state, onContinue, onBack }) {
 
             {!done && (
               <p style={{ fontSize: 13, color: 'var(--text-soft)', marginTop: 14, lineHeight: 1.5 }}>
-                เมื่อครบ ๑ นาที ปุ่มเข้าสู่พิธีจะปรากฏ คุณสามารถใช้เวลามากกว่านี้ได้ตามใจชอบ
+                ไปต่อได้ทันที หรืออยู่กับจังหวะนี้ให้ครบ ๑ นาทีก่อนเริ่มพิธี
               </p>
             )}
           </div>
@@ -1866,6 +2201,70 @@ function WalkingVisual({ t }) {
     </div>
   );
 }
+
+function EnergyGraphBackground({ samples, active, color = 'var(--c-gold)' }) {
+  const gradientId = React.useId().replace(/:/g, '');
+  const glowId = `${gradientId}-glow`;
+  const { linePath, areaPath } = React.useMemo(() => {
+    const points = samples.slice(-72);
+    if (points.length < 2) return { linePath: '', areaPath: '' };
+    const maxValue = Math.max(1.6, ...points.map(point => finiteNumber(point.value)));
+    const step = points.length > 1 ? 100 / (points.length - 1) : 100;
+    const path = points.map((point, index) => {
+      const value = Math.max(0, finiteNumber(point.value));
+      const x = index * step;
+      const y = 88 - Math.min(1, value / maxValue) * 70;
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(' ');
+    return {
+      linePath: path,
+      areaPath: `${path} L 100 96 L 0 96 Z`,
+    };
+  }, [samples]);
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: '50%',
+      top: '52%',
+      width: 'min(820px, 76vw)',
+      height: 'min(360px, 42vh)',
+      transform: 'translate(-50%, -50%)',
+      pointerEvents: 'none',
+      zIndex: 0,
+      opacity: linePath ? (active ? 0.78 : 0.42) : 0,
+      transition: 'opacity .28s ease',
+      filter: 'saturate(1.15)',
+    }}>
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: '100%', height: '100%', display: 'block' }}>
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stopColor={color} stopOpacity="0.05"/>
+            <stop offset="0.45" stopColor={color} stopOpacity="0.72"/>
+            <stop offset="1" stopColor="var(--c-peach)" stopOpacity="0.18"/>
+          </linearGradient>
+          <filter id={glowId} x="-18%" y="-60%" width="136%" height="220%">
+            <feGaussianBlur stdDeviation="1.9" result="blur"/>
+            <feMerge>
+              <feMergeNode in="blur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+        {[20, 40, 60, 80].map(y => (
+          <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="rgba(255,255,255,.18)" strokeWidth="0.22"/>
+        ))}
+        {areaPath && <path d={areaPath} fill={`url(#${gradientId})`} opacity="0.28"/>}
+        {linePath && (
+          <>
+            <path d={linePath} fill="none" stroke={color} strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" opacity="0.2" filter={`url(#${glowId})`}/>
+            <path d={linePath} fill="none" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" opacity="0.92"/>
+          </>
+        )}
+      </svg>
+    </div>
+  );
+}
 // shake.tsx — Phase 3: Real Three.js shake ritual scene
 // Stylized low-poly temple diorama. Click box to shake; meter fills; one
 // stick rises out. Plays a soft bell tone on completion.
@@ -1875,8 +2274,11 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
   const sceneApiRef = React.useRef(null);
   const onShakeRef = React.useRef(null);
   const lastEnergyAtRef = React.useRef(0);
+  const energyGraphRef = React.useRef([]);
+  const lastEnergyGraphCommitRef = React.useRef(0);
   const shakeRecorderRef = React.useRef({ startedAt: null, startedAtMs: null, samples: [], complete: false });
   const [intentEnergy, setIntentEnergy] = React.useState(0);
+  const [energyGraph, setEnergyGraph] = React.useState([]);
   const [phase, setPhase] = React.useState('ready'); // ready | shaking | revealed
   const [mqttStatus, setMqttStatus] = React.useState(window.__mqttStatus || 'connecting');
   const targetEnergy = 100;
@@ -1911,6 +2313,21 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
     } catch (e) {}
   }, [vol]);
 
+  const pushEnergyGraphPoint = React.useCallback((data) => {
+    const value = detectionAccelEuclidean(data);
+    if (!Number.isFinite(value)) return;
+    const next = [
+      ...energyGraphRef.current,
+      { t: performance.now(), value },
+    ].slice(-72);
+    energyGraphRef.current = next;
+
+    const now = performance.now();
+    if (now - lastEnergyGraphCommitRef.current < 48) return;
+    lastEnergyGraphCommitRef.current = now;
+    setEnergyGraph(next);
+  }, []);
+
   // Init the Three.js scene
   React.useEffect(() => {
     if (!mountRef.current) return;
@@ -1937,7 +2354,8 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
     const durationMs = samples.length ? samples[samples.length - 1].t_ms : 0;
     const valid = samples.length >= 8 && durationMs >= 300;
     const completedAt = new Date().toISOString();
-    const siamseeStick = state.siamseeStick || randomSiamseeStick();
+    const siamseeStick = randomSiamseeStick();
+    const luckyNumber = randomLuckyNumberForStick(siamseeStick?.stick_number, state.luckyNumber || state.shakeSession?.luckyNumber);
     const shakeSession = {
       status: 'complete',
       startedAt: recorder.startedAt || completedAt,
@@ -1946,9 +2364,10 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
       durationMs,
       csvText: valid ? shakeSamplesToCsv(samples) : '',
       stickNumber: siamseeStick?.stick_number || null,
+      luckyNumber,
     };
-    const nextState = { ...state, shakeSession, siamseeStick };
-    setState?.((current) => ({ ...current, shakeSession, siamseeStick }));
+    const nextState = { ...state, shakeSession, siamseeStick, luckyNumber };
+    setState?.((current) => ({ ...current, shakeSession, siamseeStick, luckyNumber }));
     startSiamseePrefetch(nextState, shakeSession);
     return shakeSession;
   }, [setState, state]);
@@ -1961,6 +2380,7 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
     const handleDetection = (event) => {
       const energy = sceneApiRef.current?.applyDetection?.(event.detail);
       if (!energy?.isShaking || phase === 'revealed') return;
+      pushEnergyGraphPoint(event.detail);
       const delta = Math.min(4.2, energy.energyDelta ?? energy.kineticEnergy * 0.18);
       if (delta <= 0.02) return;
       const d = event.detail || {};
@@ -1997,7 +2417,7 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
       window.removeEventListener(MQTT_DETECTION_EVENT, handleDetection);
       window.removeEventListener(MQTT_STATUS_EVENT, handleStatus);
     };
-  }, [finishShakeSession, phase, playBell]);
+  }, [finishShakeSession, phase, playBell, pushEnergyGraphPoint]);
 
   React.useEffect(() => {
     if (phase === 'revealed') return;
@@ -2030,10 +2450,14 @@ function ShakeScreen({ state, setState, onContinue, onBack, detail = 'med', vol 
       <div style={{ position: 'absolute', inset: 0, paddingTop: 0 }}>
 
         {/* Three.js canvas — fullbleed */}
-        <div ref={mountRef} style={{
+        <div style={{
           position: 'absolute', inset: 0,
           background: `radial-gradient(ellipse at center top, ${t.swatch[1]}, ${t.swatch[0]} 60%, ${t.accent}99 100%)`,
-        }}/>
+          overflow: 'hidden',
+        }}>
+          <EnergyGraphBackground samples={energyGraph} active={phase === 'shaking' || phase === 'revealed'} color={t.accent}/>
+          <div ref={mountRef} style={{ position: 'absolute', inset: 0, zIndex: 1 }}/>
+        </div>
 
         {/* Overlay UI — left copy panel */}
         <div style={{
@@ -2217,6 +2641,11 @@ function initShakeScene(container, opts) {
   renderer.shadowMap.enabled = opts.detail !== 'low';
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.domElement.style.position = 'absolute';
+  renderer.domElement.style.inset = '0';
+  renderer.domElement.style.zIndex = '1';
+  renderer.domElement.style.width = '100%';
+  renderer.domElement.style.height = '100%';
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -2258,18 +2687,20 @@ function initShakeScene(container, opts) {
 
   const woodCol = new THREE.Color(box.wood);
   const trimCol = new THREE.Color(box.trim);
-  // Bamboo natural finish — light tan body + darker node rings.
+  const darkWoodCol = woodCol.clone().lerp(new THREE.Color('#1F1714'), 0.48);
+  const shadeCol = woodCol.clone().lerp(new THREE.Color('#1F1714'), 0.34);
+  const grainCol = trimCol.clone().lerp(woodCol, 0.45);
   const bambooMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#D2BD86'),
+    color: woodCol,
     roughness: 0.85, metalness: 0,
   });
   const bambooNodeMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#8C7544'),
+    color: trimCol,
     roughness: 0.78, metalness: 0.05,
   });
   // Inner cavity (visible from above) is darker to read as hollow bamboo
   const bambooInner = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#5C4528'),
+    color: darkWoodCol,
     roughness: 0.95, side: THREE.DoubleSide,
   });
   // Keep trimMat for the existing stick tip code
@@ -2332,13 +2763,13 @@ function initShakeScene(container, opts) {
     );
     shade.position.y = y - 0.06; shade.rotation.x = Math.PI / 2;
     shade.material = shade.material.clone();
-    shade.material.color = new THREE.Color('#7A6438');
+    shade.material.color = shadeCol;
     boxGroup.add(shade);
   });
 
   // Subtle vertical grain lines for bamboo texture
   const grainMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#A68850'), transparent: true, opacity: 0.45,
+    color: grainCol, transparent: true, opacity: 0.45,
   });
   for (let i = 0; i < 18; i++) {
     const angle = (i / 18) * Math.PI * 2;
@@ -3276,48 +3707,48 @@ function initShakeScene(container, opts) {
 
 
 
-function SentimentEvaluation({ sentiment, status, error }) {
+function SentimentEvaluation({ sentiment, status, error, compact = false }) {
   const score = sentiment?.score ?? null;
   const scoreLabel = score == null ? 'รอข้อมูล' : score >= 8 ? 'มั่นคงดี' : score >= 5 ? 'กลาง ๆ มีเรื่องให้ดูแล' : 'ต้องประคองใจ';
   const color = score == null ? 'var(--c-gold)' : score >= 8 ? 'var(--c-mint-deep)' : score >= 5 ? 'var(--c-gold)' : 'var(--c-coral)';
   const percent = score == null ? 0 : Math.max(0, Math.min(100, score * 10));
   return (
-    <div className="card card-soft" style={{ padding: 26 }}>
-      <div className="eyebrow" style={{ marginBottom: 10 }}>วิเคราะห์อารมณ์</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
-        <h3 style={{ fontSize: 22, fontWeight: 500 }}>สภาวะปัจจุบัน</h3>
+    <div className="card card-soft" style={{ padding: compact ? 16 : 26 }}>
+      <div className="eyebrow" style={{ marginBottom: compact ? 8 : 10 }}>วิเคราะห์อารมณ์</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: compact ? 12 : 18 }}>
+        <h3 style={{ fontSize: compact ? 18 : 22, fontWeight: 500 }}>สภาวะปัจจุบัน</h3>
         <span style={{ color, fontWeight: 600 }}>{scoreLabel}</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14, marginBottom: 18 }}>
-        <SentimentMetric label="อารมณ์" score={sentiment?.feeling_now}/>
-        <SentimentMetric label="ชีวิตตอนนี้" score={sentiment?.wellbeing_now}/>
-        <SentimentMetric label="คะแนนรวม" score={sentiment?.score} highlight/>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: compact ? 8 : 14, marginBottom: compact ? 12 : 18 }}>
+        <SentimentMetric label="อารมณ์" score={sentiment?.feeling_now} compact={compact}/>
+        <SentimentMetric label="ชีวิตตอนนี้" score={sentiment?.wellbeing_now} compact={compact}/>
+        <SentimentMetric label="คะแนนรวม" score={sentiment?.score} highlight compact={compact}/>
       </div>
-      <div style={{ height: 10, borderRadius: 999, background: 'rgba(61,46,42,.08)', overflow: 'hidden' }}>
+      <div style={{ height: compact ? 8 : 10, borderRadius: 999, background: 'rgba(61,46,42,.08)', overflow: 'hidden' }}>
         <div style={{ width: `${percent}%`, height: '100%', borderRadius: 999, background: `linear-gradient(90deg, var(--c-peach), ${color})`, transition: 'width .25s ease' }}/>
       </div>
       {(sentiment?.reason_th || status === 'loading' || error) && (
-        <p style={{ fontSize: 13, color: error ? 'var(--c-coral)' : 'var(--text-main)', lineHeight: 1.55, marginTop: 14 }}>
+        <p style={{ fontSize: compact ? 12 : 13, color: error ? 'var(--c-coral)' : 'var(--text-main)', lineHeight: 1.55, marginTop: compact ? 10 : 14 }}>
           {error || (status === 'loading' ? 'กำลังวิเคราะห์ด้วย LLM...' : sentiment.reason_th)}
         </p>
       )}
-      <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55, marginTop: 14 }}>
+      <p style={{ fontSize: compact ? 11 : 12, color: 'var(--text-muted)', lineHeight: 1.55, marginTop: compact ? 10 : 14 }}>
         คะแนนนี้วิเคราะห์จากข้อความอธิษฐานบนสเกล 1-10 ไม่ใช่การวินิจฉัยทางการแพทย์
       </p>
     </div>
   );
 }
 
-function SentimentMetric({ label, score, highlight = false }) {
+function SentimentMetric({ label, score, highlight = false, compact = false }) {
   return (
-    <div style={{ border: '1px solid var(--border-soft)', borderRadius: 18, padding: 16, background: 'rgba(255,255,255,.45)' }}>
-      <div className="eyebrow" style={{ marginBottom: 6 }}>{label}</div>
+    <div style={{ border: '1px solid var(--border-soft)', borderRadius: compact ? 14 : 18, padding: compact ? 10 : 16, background: 'rgba(255,255,255,.45)' }}>
+      <div className="eyebrow" style={{ marginBottom: compact ? 4 : 6 }}>{label}</div>
       <div style={{
         fontFamily: 'var(--font-display)',
-        fontSize: highlight ? 38 : 34,
+        fontSize: compact ? (highlight ? 28 : 26) : (highlight ? 38 : 34),
         fontWeight: 500,
         color: highlight ? 'var(--c-coral)' : 'var(--text-main)',
-        marginBottom: 8,
+        marginBottom: compact ? 4 : 8,
       }}>
         {score ?? '-'}
       </div>
@@ -3420,7 +3851,12 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
   const [siamseeStatus, setSiamseeStatus] = React.useState('idle');
   const [siamseeError, setSiamseeError] = React.useState('');
   const displayedSiamseeStick = state.siamseeStick || getSiamseeStick(state.shakeSession?.stickNumber);
-  const fortune = fortuneFromSiamseeStick(displayedSiamseeStick, baseFortune, state.category);
+  const fortune = fortuneFromSiamseeStick(
+    displayedSiamseeStick,
+    baseFortune,
+    state.category,
+    state.luckyNumber || state.shakeSession?.luckyNumber,
+  );
 
   React.useEffect(() => {
     const text = wishText.trim();
@@ -3522,9 +3958,14 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
           {/* Two-column: paper slip + advice / actions */}
           <div style={{ display: 'grid', gridTemplateColumns: '440px 1fr', gap: 36, alignItems: 'start' }}>
 
-            {/* PAPER SLIP */}
-            <div style={{ position: 'relative', animation: 'float-up .6s cubic-bezier(.3,.7,.4,1.4) both' }}>
+            {/* LEFT column — paper slip + sentiment */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18, animation: 'float-up .6s cubic-bezier(.3,.7,.4,1.4) both' }}>
               <FortuneSlip fortune={fortune} cat={cat} temple={t}/>
+              <SentimentEvaluation
+                sentiment={sentiment}
+                status={sentimentStatus}
+                error={sentimentError}
+                compact/>
             </div>
 
             {/* RIGHT panel — interpretation, advice, actions */}
@@ -3647,7 +4088,7 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
               </p>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+            <div style={{ display: 'grid', gap: 20 }}>
               {/* Wish text input */}
               <div className="card" style={{ padding: 26 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
@@ -3679,12 +4120,6 @@ function ResultScreen({ state, onRestart, onBack, onShop, onDonate, onSaveReadin
                   หากไม่แก้ไข ระบบจะใช้ข้อความที่คุณบันทึกไว้ก่อนเริ่มพิธี
                 </p>
               </div>
-
-              {/* Sentiment evaluation metric */}
-              <SentimentEvaluation
-                sentiment={sentiment}
-                status={sentimentStatus}
-                error={sentimentError}/>
             </div>
           </div>
         </div>
@@ -4833,6 +5268,7 @@ const DEFAULT_RITUAL = {
   music: 'bell',
   shakeSession: null,
   siamseeStick: null,
+  luckyNumber: null,
 };
 
 const SEASON_PALETTES = {
@@ -4849,6 +5285,8 @@ function PhaseHost({ initialPhase, ritualPatch = {}, focus, loginProps = {} }) {
   const [phase, setPhase] = React.useState(initialPhase);
   const [ritual, setRitual] = React.useState({ ...DEFAULT_RITUAL, ...ritualPatch });
   const tweaks = window.__tweaks || TWEAK_DEFAULTS;
+  usePalmReadingEvents(ritual, setRitual);
+  usePendingPalmReading(ritual);
 
   // Listen for tweak changes
   const [, setBump] = React.useState(0);
@@ -5252,6 +5690,8 @@ function OnePageApp() {
   const [active, setActive] = React.useState('login');
   const [navVisible, setNavVisible] = React.useState(false);
   const heroRef = React.useRef(null);
+  usePalmReadingEvents(ritual, setRitual);
+  usePendingPalmReading(ritual);
 
   // apply tokens
   React.useEffect(() => {
@@ -5438,7 +5878,7 @@ function writeReadingHistory(readings) {
 
 function makeReadingRecord(ritual, sentiment = null, siamsee = null) {
   const baseFortune = FORTUNES[ritual.category] || FORTUNES.work;
-  const fortune = fortuneFromSiamseeStick(ritual.siamseeStick, baseFortune, ritual.category || 'work');
+  const fortune = fortuneFromSiamseeStick(ritual.siamseeStick, baseFortune, ritual.category || 'work', ritual.luckyNumber || ritual.shakeSession?.luckyNumber);
   const record = {
     id: `reading_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     createdAt: new Date().toISOString(),
@@ -5452,6 +5892,7 @@ function makeReadingRecord(ritual, sentiment = null, siamsee = null) {
       category: ritual.category || 'work',
       music: ritual.music || 'bell',
       siamseeStick: ritual.siamseeStick || null,
+      luckyNumber: ritual.luckyNumber || ritual.shakeSession?.luckyNumber || null,
     },
     fortune: {
       category: ritual.category || 'work',
@@ -5517,6 +5958,8 @@ function RitualPages() {
   const [t, setTweak] = useSharedTweaks();
   const hydratedSession = React.useRef(false);
   const showPageTweaks = !['/journey', '/canvas'].includes(location.pathname);
+  usePalmReadingEvents(ritual, setRitual);
+  usePendingPalmReading(ritual);
 
   const useLocalReadingsFallback = React.useCallback((message) => {
     setReadings(readReadingHistory());
@@ -5724,6 +6167,7 @@ function RoutedApp() {
     <HashRouter>
       <AppNav/>
       <RitualPages/>
+      <PalmReadingToastHost/>
     </HashRouter>
   );
 }

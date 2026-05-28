@@ -49,6 +49,7 @@ class SiamseeReadingRequest(BaseModel):
     condition: dict | None = None
     stick_number: int | None = None
     siamsee_stick: dict | None = None
+    round_context: dict | None = None
     dry_run: bool = False
     model: str = ""
 
@@ -65,6 +66,7 @@ class SiamseeReadingResponse(BaseModel):
 
 
 app = FastAPI(title="Nimidd LLM Service", version="0.1.0")
+SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def bootstrap_env() -> None:
@@ -74,14 +76,18 @@ def bootstrap_env() -> None:
 
 
 def output_root() -> Path:
-    return Path(os.getenv("LLM_OUTPUT_DIR", "/app/output"))
+    return Path(os.getenv("LLM_OUTPUT_DIR", SERVICE_ROOT / "output"))
 
 
 def env_file() -> Path | None:
     candidates = [
         Path(os.getenv("LLM_ENV_FILE", "")) if os.getenv("LLM_ENV_FILE") else None,
         Path.cwd() / ".env.local",
+        Path.cwd() / "env.local",
+        SERVICE_ROOT / ".env.local",
+        SERVICE_ROOT / "env.local",
         Path("/app/.env.local"),
+        Path("/app/env.local"),
     ]
     for path in candidates:
         if path is not None and path.exists():
@@ -157,6 +163,7 @@ def analyze_siamsee_reading(request: SiamseeReadingRequest) -> SiamseeReadingRes
             condition=request.condition,
             stick_number=request.stick_number,
             siamsee_stick=request.siamsee_stick,
+            round_context=request.round_context,
             env_file=env_file(),
             model=request.model or None,
             dry_run=request.dry_run,
