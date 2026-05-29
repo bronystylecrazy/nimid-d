@@ -24,6 +24,26 @@ function parseJson(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
+const THAI_DIGITS = {
+  '๐': '0',
+  '๑': '1',
+  '๒': '2',
+  '๓': '3',
+  '๔': '4',
+  '๕': '5',
+  '๖': '6',
+  '๗': '7',
+  '๘': '8',
+  '๙': '9',
+};
+
+function numericValue(value) {
+  const normalized = String(value ?? '')
+    .replace(/[๐-๙]/g, digit => THAI_DIGITS[digit] || digit)
+    .replace(/\D/g, '');
+  return normalized ? Number(normalized) : null;
+}
+
 function randomId(prefix) {
   return `${prefix}_${randomBytes(16).toString('hex')}`;
 }
@@ -110,6 +130,9 @@ function ritualFromRow(row, user) {
 
 function readingFromRow(row) {
   const luck = parseJson(row.fortune_luck, null);
+  const luckArray = Array.isArray(luck) ? luck : (row.fortune_luck ? [row.fortune_luck] : []);
+  const siamseeStick = parseJson(row.siamsee_stick_json, null);
+  const stickNumber = row.siamsee_stick_number || siamseeStick?.stick_number || numericValue(row.fortune_num);
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -122,6 +145,8 @@ function readingFromRow(row) {
       box: row.box || 'gold',
       category: row.category || 'work',
       music: row.music || 'bell',
+      siamseeStick,
+      luckyNumber: luckArray[0] || null,
     },
     fortune: {
       category: row.category || 'work',
@@ -130,7 +155,7 @@ function readingFromRow(row) {
       text: row.fortune_text,
       advice: row.fortune_advice,
       question: row.fortune_question,
-      luck: Array.isArray(luck) ? luck : (row.fortune_luck ? [row.fortune_luck] : []),
+      luck: luckArray,
     },
     sentiment: row.sentiment_score == null ? null : {
       feeling_now: row.sentiment_feeling_now,
@@ -147,8 +172,8 @@ function readingFromRow(row) {
       predicted_condition: row.siamsee_condition || '',
       condition_context: parseJson(row.siamsee_condition_context_json, null),
       model: row.siamsee_model || '',
-      siamsee_stick: parseJson(row.siamsee_stick_json, null),
-      stick_number: row.siamsee_stick_number,
+      siamsee_stick: siamseeStick,
+      stick_number: stickNumber,
     },
   };
 }
@@ -422,6 +447,8 @@ export function openAppDb(options = {}) {
     const fortune = record.fortune || {};
     const sentiment = record.sentiment || {};
     const siamsee = record.siamsee || {};
+    const ritualStick = ritual.siamseeStick || ritual.siamsee_stick || null;
+    const siamseeStick = siamsee.siamsee_stick || ritualStick || null;
     const id = record.id || randomId('reading');
     statements.insertReading.run(
       id,
@@ -455,8 +482,8 @@ export function openAppDb(options = {}) {
       siamsee.predicted_condition || null,
       jsonString(siamsee.condition_context, null),
       siamsee.model || null,
-      siamsee.stick_number || siamsee.siamsee_stick?.stick_number || null,
-      jsonString(siamsee.siamsee_stick, null),
+      numericValue(siamsee.stick_number || siamseeStick?.stick_number || fortune.num),
+      jsonString(siamseeStick, null),
       record.createdAt || nowIso(),
     );
     return readingFromRow(db.query('SELECT * FROM fortune_readings WHERE id = ?').get(id));

@@ -157,12 +157,31 @@ bun run build
 
 ## Docker Compose
 
-`docker-compose.yml` รวม service หลัก:
+`docker-compose.yml` รวม service หลักให้รันได้ด้วยคำสั่งเดียว:
 
-- `nimidd` - แอพหลัก
+```bash
+docker compose up --build
+```
+
+หลังจาก container พร้อมแล้ว เปิดแอพที่:
+
+```text
+http://127.0.0.1:5173
+```
+
+Service ใน compose:
+
+- `nimidd` - แอพหลักที่ build React frontend แล้ว serve static/API/WebSocket ด้วย Bun backend ใน container เดียว
 - `mqtt` - Eclipse Mosquitto broker
 - `llm-service` - Python AI service
-- `watchtower` - auto update image ที่เปิด label ไว้
+- `watchtower` - auto update image สำหรับ deploy เท่านั้น เปิดด้วย `docker compose --profile deploy up`
+
+Port เริ่มต้น:
+
+- `APP_PORT=5173` -> `nimidd:80`
+- `MQTT_PORT=1884` -> `mqtt:1883`
+- `MQTT_WS_PORT=18883` -> `mqtt:9001`
+- `LLM_PORT=8000` -> `llm-service:8000`
 
 Environment สำคัญ:
 
@@ -173,7 +192,21 @@ Environment สำคัญ:
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SIAMSEE_MODEL`
+- `OPENAI_SENTIMENT_MODEL`
 - `LLM_OUTPUT_DIR`
+
+ใน compose ค่า internal network ถูกตั้งไว้แล้ว:
+
+- `MQTT_BROKER_URL=mqtt://mqtt:1883`
+- `LLM_SERVICE_URL=http://llm-service:8000`
+
+จึงไม่ต้องรัน `bun run dev`, `bun run start`, หรือ `uv run llm-service` แยกเมื่อใช้ Docker Compose
+
+ถ้าอุปกรณ์ภายนอกต้อง publish MQTT เข้า port `1883` จริง ๆ และเครื่องไม่มี process อื่นจับ port นี้อยู่ ให้รันแบบ override ได้:
+
+```bash
+MQTT_PORT=1883 docker compose up --build
+```
 
 ## สรุปสั้น
 

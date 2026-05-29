@@ -3724,6 +3724,9 @@ function initShakeScene(container, opts) {
       const filteredAccelX = dead(deltaAccelX, 0.025);
       const filteredAccelY = dead(deltaAccelY, 0.025);
       const filteredAccelZ = dead(deltaAccelZ, 0.025);
+      const visualAccelX = -filteredAccelX;
+      const visualAccelY = -filteredAccelY;
+      const visualAccelZ = -filteredAccelZ;
       const filteredGyroX = dead(gyroX, 2.0);
       const filteredGyroY = dead(gyroY, 2.0);
       const filteredGyroZ = dead(gyroZ, 2.0);
@@ -3757,9 +3760,9 @@ function initShakeScene(container, opts) {
       state.gyroRot.z = clamp((state.gyroRot.z + filteredGyroZ * 0.000045) * 0.9, -0.16, 0.16);
 
       state.orientationSamples.push({
-        x: clamp(-filteredAccelY * 0.16 + filteredAccelZ * 0.025 + state.gyroRot.x, -0.22, 0.22),
+        x: clamp(-visualAccelY * 0.16 + visualAccelZ * 0.025 + state.gyroRot.x, -0.22, 0.22),
         y: state.gyroRot.y,
-        z: clamp(filteredAccelX * 0.16 + state.gyroRot.z, -0.22, 0.22),
+        z: clamp(visualAccelX * 0.16 + state.gyroRot.z, -0.22, 0.22),
       });
       if (state.orientationSamples.length > 18) state.orientationSamples.shift();
       const avg = state.orientationSamples.reduce((acc, sample) => {
@@ -3773,12 +3776,12 @@ function initShakeScene(container, opts) {
       avg.z /= state.orientationSamples.length;
       state.targetQuat.setFromEuler(new THREE.Euler(avg.x, avg.y, avg.z, 'YXZ'));
 
-      state.vel.x += filteredAccelY * 0.018 * (1 + accelForce);
-      state.vel.y += filteredAccelZ * 0.008 * (1 + accelForce);
-      state.vel.z += filteredAccelX * -0.014 * (1 + accelForce);
-      state.angularVel.x += filteredAccelZ * 0.012 + filteredGyroX * 0.00008;
+      state.vel.x += visualAccelY * 0.018 * (1 + accelForce);
+      state.vel.y += visualAccelZ * 0.008 * (1 + accelForce);
+      state.vel.z += visualAccelX * -0.014 * (1 + accelForce);
+      state.angularVel.x += visualAccelZ * 0.012 + filteredGyroX * 0.00008;
       state.angularVel.y += filteredGyroY * 0.00004;
-      state.angularVel.z += -filteredAccelX * 0.018 + filteredGyroZ * 0.00008;
+      state.angularVel.z += -visualAccelX * 0.018 + filteredGyroZ * 0.00008;
       state.motionForce = Math.min(0.26, Math.max(state.motionForce, force * (d.is_shaking ? 0.32 : 0.07)));
       return { isShaking: Boolean(d.is_shaking), kineticEnergy: normalizedEnergy, energyDelta };
     },

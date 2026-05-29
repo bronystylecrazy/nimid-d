@@ -58,6 +58,111 @@ function DashboardBar({ label, value, color }) {
   );
 }
 
+function DashboardInsightCard({ icon: IconCmp, label, value, detail, tone = 'var(--c-peach)' }) {
+  return (
+    <div style={{
+      minHeight: 132,
+      padding: 18,
+      borderRadius: 18,
+      border: '1px solid var(--border-soft)',
+      background: 'rgba(255,255,255,.56)',
+      display: 'grid',
+      gridTemplateColumns: '40px 1fr',
+      gap: 12,
+      alignItems: 'start',
+    }}>
+      <span style={{
+        width: 40,
+        height: 40,
+        borderRadius: 14,
+        background: tone,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        <IconCmp size={18}/>
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span className="eyebrow" style={{ display: 'block', marginBottom: 7 }}>{label}</span>
+        <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 24, lineHeight: 1.18, fontWeight: 600, marginBottom: 8 }}>
+          {value}
+        </span>
+        <span style={{ display: 'block', fontSize: 12, lineHeight: 1.5, color: 'var(--text-muted)' }}>
+          {detail}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function DashboardDistribution({ items, resolveLabel, resolveTone }) {
+  if (!items?.length) {
+    return (
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+        ยังไม่มีข้อมูลมากพอให้สรุปสัดส่วน
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {items.map((item, index) => {
+        const tone = resolveTone?.(item.value, index) || 'var(--c-peach)';
+        return (
+          <div key={item.value} style={{ display: 'grid', gap: 7 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+              <span style={{ fontWeight: 700 }}>{resolveLabel?.(item.value) || item.value}</span>
+              <span style={{ color: 'var(--text-muted)' }}>{item.count} ครั้ง · {item.percent}%</span>
+            </div>
+            <div style={{ height: 10, borderRadius: 999, background: 'var(--surface-soft)', overflow: 'hidden', border: '1px solid var(--border-soft)' }}>
+              <div style={{ width: `${item.percent}%`, height: '100%', borderRadius: 999, background: tone }}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardNumberCloud({ title, items, emptyText }) {
+  return (
+    <div style={{
+      padding: 16,
+      borderRadius: 18,
+      border: '1px solid var(--border-soft)',
+      background: 'rgba(255,255,255,.5)',
+      minHeight: 118,
+    }}>
+      <div className="eyebrow" style={{ marginBottom: 12 }}>{title}</div>
+      {items?.length ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {items.map((item, index) => (
+            <span key={`${item.value}-${index}`} style={{
+              minWidth: 54,
+              padding: '9px 11px',
+              borderRadius: 999,
+              background: index === 0 ? 'var(--c-gold)' : 'var(--surface-soft)',
+              border: '1px solid var(--border-soft)',
+              textAlign: 'center',
+              fontFamily: 'var(--font-display)',
+              fontSize: 18,
+              fontWeight: 600,
+              fontVariantNumeric: 'tabular-nums',
+            }}>
+              {item.value}
+              <span style={{ display: 'block', marginTop: 2, fontFamily: 'inherit', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)' }}>
+                {item.count}x
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.55 }}>{emptyText}</p>
+      )}
+    </div>
+  );
+}
+
 function DashboardActivity({ record, cat, index }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '18px 1fr', gap: 12, alignItems: 'stretch' }}>
@@ -79,4 +184,4 @@ function DashboardActivity({ record, cat, index }) {
   );
 }
 
-export { DashboardMetric, DashboardStartCard, DashboardBar, DashboardActivity };
+export { DashboardMetric, DashboardStartCard, DashboardBar, DashboardInsightCard, DashboardDistribution, DashboardNumberCloud, DashboardActivity };

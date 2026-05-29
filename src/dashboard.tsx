@@ -1,7 +1,27 @@
 // @ts-nocheck
 import React from 'react';
-import { DashboardActivity, DashboardBar, DashboardMetric, DashboardStartCard } from './dashboard-components';
-import { calcCurrentStreak, calcWeeklyInsights, mostFrequent, readingTime } from './dashboard-utils';
+import { DashboardActivity, DashboardBar, DashboardDistribution, DashboardInsightCard, DashboardMetric, DashboardNumberCloud, DashboardStartCard } from './dashboard-components';
+import { calcCurrentStreak, calcResultInsights, calcWeeklyInsights, mostFrequent, readingTime } from './dashboard-utils';
+
+const INSIGHT_TONES = ['var(--c-peach)', 'var(--c-lavender)', 'var(--c-gold)', 'var(--c-mint)'];
+
+function formatSentimentScore(score) {
+  return score == null ? 'ยังไม่มีคะแนน' : `${score.toFixed(1)}/10`;
+}
+
+function formatSentimentTrend(delta) {
+  if (delta == null) return 'บันทึกผลพร้อมวิเคราะห์อารมณ์เพิ่ม เพื่อดูแนวโน้มใจเทียบกับครั้งก่อน ๆ';
+  if (Math.abs(delta) < 0.25) return 'สภาวะใจช่วงล่าสุดค่อนข้างนิ่งเมื่อเทียบกับรอบก่อน';
+  return delta > 0
+    ? `ดีขึ้น ${delta.toFixed(1)} คะแนนจากช่วงก่อน`
+    : `ลดลง ${Math.abs(delta).toFixed(1)} คะแนนจากช่วงก่อน`;
+}
+
+function compactText(text, limit = 92) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return 'ยังไม่มีคำแนะนำล่าสุดให้สรุป';
+  return value.length > limit ? `${value.slice(0, limit).trim()}...` : value;
+}
 
 export default function DashboardScreen({
   ritual,
@@ -26,10 +46,23 @@ export default function DashboardScreen({
   const luckyTempleMeta = TEMPLES.find(t => t.id === luckyTemple);
   const streak = calcCurrentStreak(sorted);
   const weekly = calcWeeklyInsights(sorted);
+  const insights = React.useMemo(() => calcResultInsights(sorted), [sorted]);
   const displayCat = CATEGORIES.find(c => c.id === (latest?.ritual?.category || latest?.fortune?.category)) || CATEGORIES[2];
   const displayTemple = TEMPLES.find(t => t.id === latest?.ritual?.temple) || TEMPLES[0];
   const displayBox = BOXES.find(b => b.id === latest?.ritual?.box) || BOXES[0];
   const DisplayIcon = Icon[displayCat.icon] || Icon.sparkle;
+  const topCategory = insights.categoryCounts[0] || null;
+  const topCategoryMeta = CATEGORIES.find(c => c.id === topCategory?.value);
+  const TopCategoryIcon = Icon[topCategoryMeta?.icon] || Icon.compass;
+  const topMood = insights.moodCounts[0] || null;
+  const topTemple = insights.templeCounts[0] || null;
+  const topTempleMeta = TEMPLES.find(t => t.id === topTemple?.value);
+  const topResultNumber = insights.resultNumbers[0] || null;
+  const categoryLabel = (id) => CATEGORIES.find(c => c.id === id)?.name || id;
+  const categoryTone = (id, index) => {
+    const catIndex = Math.max(0, CATEGORIES.findIndex(c => c.id === id));
+    return INSIGHT_TONES[(catIndex + index) % INSIGHT_TONES.length];
+  };
   const showStatus = isLoadingReadings || readingsError || readingsSource === 'local';
   const statusText = isLoadingReadings
     ? 'กำลังโหลดข้อมูลจากระบบ...'
@@ -98,6 +131,125 @@ export default function DashboardScreen({
           <DashboardMetric icon={Icon.lotus} label="Lucky Element" value={luckyTempleMeta?.name || 'ยังไม่มีข้อมูล'} tone="var(--c-gold)"/>
           <DashboardMetric icon={Icon.bell} label="Current Streak" value={`${streak} วัน`} tone="var(--c-mint)"/>
         </div>
+
+        <section className="card" style={{ padding: 24, marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>Result Insights</div>
+              <h2 style={{ fontSize: 24, lineHeight: 1.2 }}>อ่านแพทเทิร์นจากผลเซียมซีที่ผ่านมา</h2>
+            </div>
+            <span className="badge">{total ? `${total} ครั้ง` : 'รอข้อมูล'}</span>
+          </div>
+
+          {total ? (
+            <div style={{ display: 'grid', gap: 18 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+                <DashboardInsightCard
+                  icon={TopCategoryIcon}
+                  label="หมวดที่ใจวนกลับมา"
+                  value={topCategoryMeta?.name || 'ยังไม่ชัด'}
+                  detail={topCategory ? `${topCategory.count} จาก ${total} ครั้ง (${topCategory.percent}%) สะท้อนเรื่องที่คุณกลับมาถามบ่อยที่สุด` : 'ต้องมีผลบันทึกมากกว่านี้เพื่ออ่านสัญญาณ'}
+                  tone="var(--c-peach)"/>
+                <DashboardInsightCard
+                  icon={Icon.lotus}
+                  label="สภาวะใจเฉลี่ย"
+                  value={formatSentimentScore(insights.averageSentiment)}
+                  detail={formatSentimentTrend(insights.sentimentDelta)}
+                  tone="var(--c-mint)"/>
+                <DashboardInsightCard
+                  icon={Icon.sparkle}
+                  label="เลขที่ออกบ่อย"
+                  value={topResultNumber ? `เลข ${topResultNumber.value}` : 'ยังไม่ซ้ำ'}
+                  detail={topResultNumber ? `พบ ${topResultNumber.count} ครั้งจากประวัติทั้งหมด แยกจากเลขนำโชคของแต่ละรอบ` : 'เมื่อมีหลายผล ระบบจะจับเลขที่วนกลับมาให้เห็น'}
+                  tone="var(--c-gold)"/>
+                <DashboardInsightCard
+                  icon={Icon.bell}
+                  label="จังหวะพิธีที่ใช้บ่อย"
+                  value={topTempleMeta?.name || 'ยังไม่ชัด'}
+                  detail={topMood ? `อารมณ์ก่อนพิธีที่พบบ่อยคือ “${topMood.value}” (${topMood.count} ครั้ง)` : 'เลือก mood ก่อนพิธีเพิ่ม เพื่อให้เห็น pattern ของใจชัดขึ้น'}
+                  tone="var(--c-lavender)"/>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: 18, alignItems: 'stretch' }}>
+                <div style={{
+                  padding: 18,
+                  borderRadius: 20,
+                  background: 'rgba(255,255,255,.48)',
+                  border: '1px solid var(--border-soft)',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                    <h3 style={{ fontSize: 17 }}>สัดส่วนคำถาม</h3>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>จากผลที่บันทึกไว้</span>
+                  </div>
+                  <DashboardDistribution
+                    items={insights.categoryCounts}
+                    resolveLabel={categoryLabel}
+                    resolveTone={categoryTone}/>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 12 }}>
+                  <DashboardNumberCloud
+                    title="หมายเลขที่ได้บ่อย"
+                    items={insights.resultNumbers}
+                    emptyText="ยังไม่มีหมายเลขจากผลเซียมซี"/>
+                  <DashboardNumberCloud
+                    title="เลขนำโชคที่โผล่บ่อย"
+                    items={insights.luckyNumbers}
+                    emptyText="ยังไม่มีเลขนำโชคจากผลเซียมซี"/>
+                </div>
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '40px 1fr',
+                gap: 12,
+                alignItems: 'start',
+                padding: 16,
+                borderRadius: 18,
+                background: 'var(--surface-soft)',
+                border: '1px solid var(--border-soft)',
+              }}>
+                <span style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 14,
+                  background: 'var(--text-main)',
+                  color: 'var(--text-on-dark)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
+                  <Icon.pencil size={18}/>
+                </span>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>คำแนะนำที่ควรกลับมาอ่าน</div>
+                  <p style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-main)' }}>
+                    {compactText(insights.latestAdvice)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{
+              minHeight: 170,
+              display: 'grid',
+              placeItems: 'center',
+              textAlign: 'center',
+              borderRadius: 20,
+              background: 'var(--surface-soft)',
+              border: '1px dashed var(--border-medium)',
+              padding: 24,
+            }}>
+              <div>
+                <Icon.sparkle size={28} color="var(--c-gold)"/>
+                <h3 style={{ fontSize: 22, margin: '12px 0 8px' }}>ยังไม่มี insight จากผลจริง</h3>
+                <p style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 480 }}>
+                  เมื่อบันทึกผลจากหน้า result แล้ว dashboard จะสรุปหมวดที่ถามบ่อย สภาวะใจเฉลี่ย เลขที่ออก และเลขนำโชคที่วนกลับมาให้ทันที
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 20, marginBottom: 20 }}>
           <section className="card" style={{ padding: 24, minHeight: 270 }}>
